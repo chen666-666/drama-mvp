@@ -37,10 +37,18 @@ def home() -> str:
     finally:
         session.close()
 
+    drama_items = [(drama, parse_tags(drama.tags)) for drama in dramas]
+    all_tags = sorted({tag for _, tags in drama_items for tag in tags}, key=str.casefold)
+    tag_options = "".join(
+        f'<option value="{escape(tag, quote=True)}">#{escape(tag)}</option>'
+        for tag in all_tags
+    )
+
     cards = "".join(
         f'''
         <a href="{escape(drama.official_url, quote=True)}" target="_blank" rel="noopener noreferrer"
-           class="group block break-inside-avoid overflow-hidden rounded-3xl border border-white/10 bg-slate-900/70 shadow-xl shadow-indigo-950/20 transition duration-300 hover:-translate-y-1 hover:border-fuchsia-300/60 hover:shadow-fuchsia-500/20">
+           data-title="{escape(drama.title, quote=True)}" data-tags="{escape(json.dumps(tags, ensure_ascii=False), quote=True)}"
+           class="drama-card group block break-inside-avoid overflow-hidden rounded-3xl border border-white/10 bg-slate-900/70 shadow-xl shadow-indigo-950/20 transition duration-300 hover:-translate-y-1 hover:border-fuchsia-300/60 hover:shadow-fuchsia-500/20">
           <div class="relative overflow-hidden">
             <img src="{escape(drama.cover_url, quote=True)}" alt="{escape(drama.title)}封面" class="h-56 w-full object-cover transition duration-500 group-hover:scale-105" />
             <div class="absolute inset-0 bg-gradient-to-t from-slate-950/70 via-transparent to-transparent"></div>
@@ -50,12 +58,12 @@ def home() -> str:
             <h2 class="text-lg font-bold text-white">{escape(drama.title)}</h2>
             <p class="mt-2 text-sm leading-6 text-slate-300">{escape(drama.ai_summary)}</p>
             <div class="mt-4 flex flex-wrap gap-2">
-              {"".join(f'<span class="rounded-full bg-indigo-400/15 px-2.5 py-1 text-xs text-indigo-200 ring-1 ring-inset ring-indigo-300/20">#{escape(tag)}</span>' for tag in parse_tags(drama.tags))}
+              {"".join(f'<span class="rounded-full bg-indigo-400/15 px-2.5 py-1 text-xs text-indigo-200 ring-1 ring-inset ring-indigo-300/20">#{escape(tag)}</span>' for tag in tags)}
             </div>
           </div>
         </a>
         '''
-        for drama in dramas
+        for drama, tags in drama_items
     )
     return f'''<!doctype html>
 <html lang="zh-CN">
@@ -74,10 +82,52 @@ def home() -> str:
     <header class="mb-10 max-w-2xl">
       <p class="mb-3 inline-flex rounded-full border border-fuchsia-300/30 bg-fuchsia-400/10 px-3 py-1 text-sm text-fuchsia-200">AI 精选 · 本周短剧</p>
       <h1 class="text-4xl font-black tracking-tight sm:text-5xl">发现下一部<br /><span class="bg-gradient-to-r from-fuchsia-300 to-amber-200 bg-clip-text text-transparent">让人上头的短剧</span></h1>
-      <p class="mt-5 leading-7 text-slate-300">由 AI 整理的高分短剧清单。点击这个卡片，即可前往官方平台观看。</p>
+      <p class="mt-5 leading-7 text-slate-300">由 AI 整理的高分短剧清单。点击卡片，即可前往官方平台观看。</p>
     </header>
-    <section class="columns-1 gap-6 sm:columns-2 lg:columns-3">{cards}</section>
+
+    <div class="mb-8 flex flex-col gap-3 sm:flex-row">
+      <label class="sr-only" for="drama-search">搜索短剧</label>
+      <input id="drama-search" type="search" placeholder="搜索短剧标题…"
+             class="w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-fuchsia-300/60 sm:flex-1" />
+      <label class="sr-only" for="tag-filter">按标签筛选</label>
+      <select id="tag-filter"
+              class="rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none focus:border-fuchsia-300/60 sm:w-52">
+        <option value="">全部标签</option>
+        {tag_options}
+      </select>
+    </div>
+
+    <p id="no-results" class="hidden mb-6 text-sm text-slate-400">没有找到匹配的短剧。</p>
+    <section id="drama-list" class="columns-1 gap-6 sm:columns-2 lg:columns-3">{cards}</section>
   </main>
+
+  <script>
+    const searchInput = document.getElementById("drama-search");
+    const tagFilter = document.getElementById("tag-filter");
+    const cards = Array.from(document.querySelectorAll(".drama-card"));
+    const noResults = document.getElementById("no-results");
+
+    function filterDramas() {{
+      const query = searchInput.value.trim().toLocaleLowerCase();
+      const selectedTag = tagFilter.value;
+      let visibleCount = 0;
+
+      cards.forEach((card) => {{
+        const titleMatches = card.dataset.title.toLocaleLowerCase().includes(query);
+        const tags = JSON.parse(card.dataset.tags);
+        const tagMatches = !selectedTag || tags.includes(selectedTag);
+        const isVisible = titleMatches && tagMatches;
+
+        card.hidden = !isVisible;
+        if (isVisible) visibleCount += 1;
+      }});
+
+      noResults.hidden = visibleCount !== 0;
+    }}
+
+    searchInput.addEventListener("input", filterDramas);
+    tagFilter.addEventListener("change", filterDramas);
+  </script>
 </body>
 </html>'''
 
