@@ -1,28 +1,36 @@
-"""Collect public, server-rendered metadata from the Red Fruit drama ranking.
+"""Aggregate public, server-rendered Red Fruit drama metadata responsibly.
 
-This module only reads publicly visible HTML metadata. It does not download
-videos, access stream URLs, send custom headers, use cookies, log in, or try
-to bypass a CAPTCHA, signature check, rate limit, or other access control.
+Only publicly visible HTML metadata is collected: title, cover image URL,
+summary, and public detail-page URL. This module never downloads media,
+accesses stream URLs, uses cookies, sends custom headers, logs in, or tries
+to bypass verification, rate limits, signatures, or other access controls.
 """
 
 import logging
+import time
 from urllib.parse import urljoin
 
 import httpx
-from bs4 import BeautifulSoup, Tag
+from bs4 import BeautifulSoup
 
 from collector import collect_dramas
 
 
-TARGET_URL = "https://hongguoduanju.com/rank/hot-drama"
-MAX_DRAMAS = 6
+PUBLIC_LIST_PAGES = (
+    ("红果热播榜", "https://hongguoduanju.com/rank/hot-drama"),
+    ("真人剧热播榜", "https://hongguoduanju.com/rank/hot-real-drama"),
+    ("AI剧热播榜", "https://hongguoduanju.com/rank/hot-ai-drama"),
+    ("漫剧热播榜", "https://hongguoduanju.com/rank/hot-comic-drama"),
+)
+MAX_DRAMAS_PER_PAGE = 6
 REQUEST_TIMEOUT_SECONDS = 10
+REQUEST_DELAY_SECONDS = 2
 
 logger = logging.getLogger(__name__)
 
 
 class RedFruitSpiderError(RuntimeError):
-    """Raised when public page metadata cannot be collected safely."""
+    """Raised when no public list page can be collected safely."""
 
 
 def normalize_text(value: str) -> str:
@@ -31,61 +39,64 @@ def normalize_text(value: str) -> str:
 
 
 def has_description_class(value: object) -> bool:
-    """Match the page's descriptive paragraph without depending on its hash."""
+    """Match the page description without depending on its generated suffix."""
     classes = value.split() if isinstance(value, str) else (value or [])
     return any("description" in str(class_name) for class_name in classes)
 
 
 def has_verification_signal(soup: BeautifulSoup) -> bool:
-    """Detect a visible access challenge and stop rather than bypass it."""
+    """Detect a visible access challenge and stop that page immediately."""
     visible_text = soup.get_text(" ", strip=True).lower()
     signals = ("captcha", "验证码", "人机验证", "安全验证", "请完成验证")
     return any(signal in visible_text for signal in signals)
 
 
-def fetch_red_fruit_dramas(limit: int = MAX_DRAMAS) -> list[dict[str, str]]:
-    """Fetch up to six server-rendered ranking entries from the public page.
+def get_ranking_list(soup: BeautifulSoup):
+    """Return a server-rendered ranking list, if the page exposes one."""
+    return soup.find(
+        "ol",
+        attrs={"aria-label": lambda value: value and "热播榜" in value},
+    )
 
-    The request uses httpx defaults only: no custom User-Agent, headers,
-    cookies, authentication, proxy, retry, or redirect-following behavior.
+
+def fetch_page_dramas(page_name: str, page_url: str) -> list[dict[str, str]]:
+    """Fetch one public page once, then wait two seconds before any next page.
+
+    A blocked, challenged, dynamic, or failed page is skipped. No retry is
+    attempted, so the remaining public pages can still be processed politely.
     """
-    if not 1 <= limit <= MAX_DRAMAS:
-        raise ValueError(f"抓取数量必须在 1 到 {MAX_DRAMAS} 条之间。")
-
     try:
-        response = httpx.get(TARGET_URL, timeout=REQUEST_TIMEOUT_SECONDS)
-    except httpx.TimeoutException as exc:
-        logger.error("红果公开页请求超时，已停止：%s", exc)
-        raise RedFruitSpiderError("红果公开页请求超时，已停止且不会重试。") from exc
+        # Intentionally use httpx defaults: no custom headers, cookies, or auth.
+        response = httpx.get(page_url, timeout=REQUEST_TIMEOUT_SECONDS)
+    except httpx.TimeoutException:
+        logger.warning("%s 请求超时，已跳过且不会重试。", page_name)
+        return []
     except httpx.HTTPError as exc:
-        logger.error("红果公开页请求失败，已停止：%s", exc)
-        raise RedFruitSpiderError(f"红果公开页请求失败：{exc}") from exc
+        logger.warning("%s 请求失败（%s），已跳过且不会重试。", page_name, exc)
+        return []
+    finally:
+        # This runs once after every page request, including request failures.
+        time.sleep(REQUEST_DELAY_SECONDS)
 
     if response.status_code in {403, 429}:
-        logger.error("红果公开页返回 HTTP %s，已停止且不会重试。", response.status_code)
-        raise RedFruitSpiderError(
-            f"红果公开页拒绝或限流请求（HTTP {response.status_code}），已停止。"
-        )
-
-    try:
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise RedFruitSpiderError(
-            f"红果公开页返回异常状态码（HTTP {response.status_code}），已停止。"
-        ) from exc
+        logger.warning("%s 返回 HTTP %s，已跳过且不会重试。", page_name, response.status_code)
+        return []
+    if response.is_error:
+        logger.warning("%s 返回 HTTP %s，已跳过。", page_name, response.status_code)
+        return []
 
     soup = BeautifulSoup(response.text, "html.parser")
     if has_verification_signal(soup):
-        raise RedFruitSpiderError("页面出现验证码或安全验证信号，已停止且不会绕过。")
+        logger.warning("%s 出现验证码或安全验证信号，已跳过。", page_name)
+        return []
 
-    ranking = soup.find("ol", attrs={"aria-label": "红果热播榜"})
+    ranking = get_ranking_list(soup)
     if ranking is None:
-        raise RedFruitSpiderError(
-            "页面未直出红果热播榜内容，可能改为动态加载；已停止，不会尝试绕过。"
-        )
+        logger.warning("%s 未直出榜单内容，可能为动态加载；已跳过。", page_name)
+        return []
 
     dramas: list[dict[str, str]] = []
-    for article in ranking.find_all("article", limit=limit):
+    for article in ranking.find_all("article", limit=MAX_DRAMAS_PER_PAGE):
         title_node = article.find("h2", id=lambda value: value and value.startswith("rank-title-"))
         detail_link = article.find(
             "a",
@@ -95,7 +106,7 @@ def fetch_red_fruit_dramas(limit: int = MAX_DRAMAS) -> list[dict[str, str]]:
         description_node = article.find("p", class_=has_description_class)
 
         title = normalize_text(title_node.get_text(" ", strip=True)) if title_node else ""
-        official_url = urljoin(TARGET_URL, detail_link["href"]) if detail_link else ""
+        official_url = urljoin(page_url, detail_link["href"]) if detail_link else ""
         cover_url = str(cover["src"]).strip() if cover else ""
         description = (
             normalize_text(description_node.get_text(" ", strip=True))
@@ -104,7 +115,7 @@ def fetch_red_fruit_dramas(limit: int = MAX_DRAMAS) -> list[dict[str, str]]:
         )
 
         if not all((title, official_url, cover_url, description)):
-            logger.warning("跳过缺少标题、封面、简介或详情页链接的公开榜单条目。")
+            logger.warning("%s 中有条目缺少公开元数据，已跳过。", page_name)
             continue
 
         dramas.append(
@@ -115,9 +126,27 @@ def fetch_red_fruit_dramas(limit: int = MAX_DRAMAS) -> list[dict[str, str]]:
                 "official_url": official_url,
             }
         )
+    return dramas
+
+
+def fetch_red_fruit_dramas() -> list[dict[str, str]]:
+    """Aggregate and de-duplicate publicly rendered metadata from all pages."""
+    dramas: list[dict[str, str]] = []
+    seen_urls: set[str] = set()
+    seen_titles: set[str] = set()
+
+    for page_name, page_url in PUBLIC_LIST_PAGES:
+        for drama in fetch_page_dramas(page_name, page_url):
+            normalized_title = drama["title"].casefold()
+            if drama["official_url"] in seen_urls or normalized_title in seen_titles:
+                logger.info("跳过重复短剧：%s", drama["title"])
+                continue
+            seen_urls.add(drama["official_url"])
+            seen_titles.add(normalized_title)
+            dramas.append(drama)
 
     if not dramas:
-        raise RedFruitSpiderError("未从公开直出 HTML 中解析到可用剧集数据，已停止。")
+        raise RedFruitSpiderError("没有从任何公开直出榜单页获得可用数据，已停止。")
     return dramas
 
 
