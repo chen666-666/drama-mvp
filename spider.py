@@ -1,125 +1,136 @@
-"""Fetch a small, polite sample of publicly available TVmaze show data."""
+"""Collect public, server-rendered metadata from the Red Fruit drama ranking.
+
+This module only reads publicly visible HTML metadata. It does not download
+videos, access stream URLs, send custom headers, use cookies, log in, or try
+to bypass a CAPTCHA, signature check, rate limit, or other access control.
+"""
 
 import logging
-import time
-from html.parser import HTMLParser
-from typing import Any
+from urllib.parse import urljoin
 
 import httpx
+from bs4 import BeautifulSoup, Tag
 
 from collector import collect_dramas
 
 
-TVMAZE_SHOWS_URL = "https://api.tvmaze.com/shows?page=0"
-REQUEST_HEADERS = {
-    "User-Agent": "drama-mvp-demo/1.0 (public-data demonstration; contact: local-demo)",
-    "Accept": "application/json",
-}
+TARGET_URL = "https://hongguoduanju.com/rank/hot-drama"
+MAX_DRAMAS = 6
 REQUEST_TIMEOUT_SECONDS = 10
-REQUEST_DELAY_SECONDS = 1
 
 logger = logging.getLogger(__name__)
 
 
-class TVMazeSpiderError(RuntimeError):
-    """Raised when the public TVmaze endpoint cannot be used safely."""
+class RedFruitSpiderError(RuntimeError):
+    """Raised when public page metadata cannot be collected safely."""
 
 
-class HTMLTextExtractor(HTMLParser):
-    """Convert a small HTML summary fragment to plain text."""
-
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-    def text(self) -> str:
-        return " ".join(" ".join(self.parts).split())
+def normalize_text(value: str) -> str:
+    """Collapse page whitespace without altering the visible content."""
+    return " ".join(value.split())
 
 
-def strip_html(html: str) -> str:
-    """Remove HTML markup from a TVmaze summary."""
-    parser = HTMLTextExtractor()
-    parser.feed(html)
-    parser.close()
-    return parser.text()
+def has_description_class(value: object) -> bool:
+    """Match the page's descriptive paragraph without depending on its hash."""
+    classes = value.split() if isinstance(value, str) else (value or [])
+    return any("description" in str(class_name) for class_name in classes)
 
 
-def fetch_tvmaze_dramas(limit: int = 6) -> list[dict[str, str]]:
-    """Fetch up to ``limit`` shows from TVmaze's public first API page.
+def has_verification_signal(soup: BeautifulSoup) -> bool:
+    """Detect a visible access challenge and stop rather than bypass it."""
+    visible_text = soup.get_text(" ", strip=True).lower()
+    signals = ("captcha", "验证码", "人机验证", "安全验证", "请完成验证")
+    return any(signal in visible_text for signal in signals)
 
-    This function makes one request only. It never attempts authentication,
-    CAPTCHA handling, proxy rotation, retries, or rate-limit bypassing.
+
+def fetch_red_fruit_dramas(limit: int = MAX_DRAMAS) -> list[dict[str, str]]:
+    """Fetch up to six server-rendered ranking entries from the public page.
+
+    The request uses httpx defaults only: no custom User-Agent, headers,
+    cookies, authentication, proxy, retry, or redirect-following behavior.
     """
-    if not 1 <= limit <= 10:
-        raise ValueError("演示抓取数量必须在 1 到 10 条之间。")
+    if not 1 <= limit <= MAX_DRAMAS:
+        raise ValueError(f"抓取数量必须在 1 到 {MAX_DRAMAS} 条之间。")
 
     try:
-        with httpx.Client(
-            headers=REQUEST_HEADERS,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            follow_redirects=True,
-        ) as client:
-            response = client.get(TVMAZE_SHOWS_URL)
+        response = httpx.get(TARGET_URL, timeout=REQUEST_TIMEOUT_SECONDS)
+    except httpx.TimeoutException as exc:
+        logger.error("红果公开页请求超时，已停止：%s", exc)
+        raise RedFruitSpiderError("红果公开页请求超时，已停止且不会重试。") from exc
     except httpx.HTTPError as exc:
-        raise TVMazeSpiderError(f"请求 TVmaze 公开 API 失败：{exc}") from exc
-    finally:
-        # Keep at least one second between this request and any later request.
-        time.sleep(REQUEST_DELAY_SECONDS)
+        logger.error("红果公开页请求失败，已停止：%s", exc)
+        raise RedFruitSpiderError(f"红果公开页请求失败：{exc}") from exc
 
     if response.status_code in {403, 429}:
-        logger.error("TVmaze 返回 HTTP %s；已停止，不会重试。", response.status_code)
-        raise TVMazeSpiderError(
-            f"TVmaze 拒绝或限流请求（HTTP {response.status_code}），已停止。"
+        logger.error("红果公开页返回 HTTP %s，已停止且不会重试。", response.status_code)
+        raise RedFruitSpiderError(
+            f"红果公开页拒绝或限流请求（HTTP {response.status_code}），已停止。"
         )
 
     try:
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
-        raise TVMazeSpiderError(
-            f"TVmaze 返回异常状态码：HTTP {response.status_code}。"
+        raise RedFruitSpiderError(
+            f"红果公开页返回异常状态码（HTTP {response.status_code}），已停止。"
         ) from exc
 
-    try:
-        shows: list[dict[str, Any]] = response.json()
-    except ValueError as exc:
-        raise TVMazeSpiderError("TVmaze 返回的内容不是有效 JSON。") from exc
+    soup = BeautifulSoup(response.text, "html.parser")
+    if has_verification_signal(soup):
+        raise RedFruitSpiderError("页面出现验证码或安全验证信号，已停止且不会绕过。")
+
+    ranking = soup.find("ol", attrs={"aria-label": "红果热播榜"})
+    if ranking is None:
+        raise RedFruitSpiderError(
+            "页面未直出红果热播榜内容，可能改为动态加载；已停止，不会尝试绕过。"
+        )
 
     dramas: list[dict[str, str]] = []
-    for show in shows[:limit]:
-        image = show.get("image") or {}
-        title = str(show.get("name") or "").strip()
-        official_url = str(show.get("url") or "").strip()
-        cover_url = str(image.get("medium") or "").strip()
-        description = strip_html(str(show.get("summary") or ""))
+    for article in ranking.find_all("article", limit=limit):
+        title_node = article.find("h2", id=lambda value: value and value.startswith("rank-title-"))
+        detail_link = article.find(
+            "a",
+            href=lambda value: value and value.startswith("/detail?series_id="),
+        )
+        cover = article.find("img", src=True)
+        description_node = article.find("p", class_=has_description_class)
+
+        title = normalize_text(title_node.get_text(" ", strip=True)) if title_node else ""
+        official_url = urljoin(TARGET_URL, detail_link["href"]) if detail_link else ""
+        cover_url = str(cover["src"]).strip() if cover else ""
+        description = (
+            normalize_text(description_node.get_text(" ", strip=True))
+            if description_node
+            else ""
+        )
 
         if not all((title, official_url, cover_url, description)):
-            raise TVMazeSpiderError("TVmaze 返回的前几条数据缺少标题、链接、封面或简介。")
+            logger.warning("跳过缺少标题、封面、简介或详情页链接的公开榜单条目。")
+            continue
 
         dramas.append(
             {
                 "title": title,
-                "official_url": official_url,
                 "cover_url": cover_url,
                 "description": description,
+                "official_url": official_url,
             }
         )
 
-    if len(dramas) != limit:
-        raise TVMazeSpiderError("TVmaze 返回的剧集数量不足。")
+    if not dramas:
+        raise RedFruitSpiderError("未从公开直出 HTML 中解析到可用剧集数据，已停止。")
     return dramas
 
 
 def run() -> int:
-    """Fetch six public TVmaze shows, enrich them with AI, and store them."""
-    dramas = fetch_tvmaze_dramas(limit=6)
-    count = collect_dramas(dramas)
-    return count
+    """Collect public metadata, then delegate AI enrichment and storage."""
+    return collect_dramas(fetch_red_fruit_dramas())
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
-    count = run()
-    print(f"已抓取并写入 {count} 部 TVmaze 公开剧集到 drama.db")
+    try:
+        count = run()
+    except RedFruitSpiderError as exc:
+        logger.error("采集已停止：%s", exc)
+    else:
+        print(f"已写入 {count} 部红果短剧的公开页面元数据到 drama.db")
