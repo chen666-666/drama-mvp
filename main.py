@@ -74,7 +74,7 @@ def home() -> str:
     <header class="mb-10 max-w-2xl">
       <p class="mb-3 inline-flex rounded-full border border-fuchsia-300/30 bg-fuchsia-400/10 px-3 py-1 text-sm text-fuchsia-200">AI 精选 · 本周短剧</p>
       <h1 class="text-4xl font-black tracking-tight sm:text-5xl">发现下一部<br /><span class="bg-gradient-to-r from-fuchsia-300 to-amber-200 bg-clip-text text-transparent">让人上头的短剧</span></h1>
-      <p class="mt-5 leading-7 text-slate-300">由 AI 整理的高分短剧清单。点击卡片，即可前往官方平台观看。</p>
+      <p class="mt-5 leading-7 text-slate-300">由 AI 整理的高分短剧清单。点击这个卡片，即可前往官方平台观看。</p>
     </header>
     <section class="columns-1 gap-6 sm:columns-2 lg:columns-3">{cards}</section>
   </main>
