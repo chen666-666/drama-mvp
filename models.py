@@ -21,6 +21,7 @@ class Drama(Base):
     ai_summary: Mapped[str] = mapped_column(Text, nullable=False)
     ai_score: Mapped[float] = mapped_column(Float, nullable=False)
     tags: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.now,

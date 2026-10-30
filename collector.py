@@ -102,6 +102,7 @@ JSON 必须严格使用以下字段：
 
     return {
         **drama,
+        "category": str(drama.get("category", "")).strip() or None,
         "ai_score": score,
         "ai_summary": summary,
         "tags": json.dumps(tags, ensure_ascii=False),

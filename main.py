@@ -3,6 +3,7 @@ from html import escape
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
+from jinja2 import Environment
 from sqlalchemy import select
 
 from database import SessionLocal, init_db
@@ -38,16 +39,18 @@ def home() -> str:
         session.close()
 
     drama_items = [(drama, parse_tags(drama.tags)) for drama in dramas]
-    all_tags = sorted({tag for _, tags in drama_items for tag in tags}, key=str.casefold)
-    tag_options = "".join(
-        f'<option value="{escape(tag, quote=True)}">#{escape(tag)}</option>'
-        for tag in all_tags
+    categories = sorted(
+        {drama.category for drama in dramas if drama.category}, key=str.casefold
     )
+    category_options = Environment(autoescape=True).from_string(
+        '{% for category in categories %}<option value="{{ category }}">'
+        '{{ category }}</option>{% endfor %}'
+    ).render(categories=categories)
 
     cards = "".join(
         f'''
         <a href="{escape(drama.official_url, quote=True)}" target="_blank" rel="noopener noreferrer"
-           data-title="{escape(drama.title, quote=True)}" data-tags="{escape(json.dumps(tags, ensure_ascii=False), quote=True)}"
+           data-title="{escape(drama.title, quote=True)}" data-category="{escape(drama.category or '', quote=True)}"
            class="drama-card group block break-inside-avoid overflow-hidden rounded-3xl border border-white/10 bg-slate-900/70 shadow-xl shadow-indigo-950/20 transition duration-300 hover:-translate-y-1 hover:border-fuchsia-300/60 hover:shadow-fuchsia-500/20">
           <div class="relative overflow-hidden">
             <img src="{escape(drama.cover_url, quote=True)}" alt="{escape(drama.title)}封面" class="h-56 w-full object-cover transition duration-500 group-hover:scale-105" />
@@ -89,11 +92,11 @@ def home() -> str:
       <label class="sr-only" for="drama-search">搜索短剧</label>
       <input id="drama-search" type="search" placeholder="搜索短剧标题…"
              class="w-full rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none placeholder:text-slate-400 focus:border-fuchsia-300/60 sm:flex-1" />
-      <label class="sr-only" for="tag-filter">按标签筛选</label>
-      <select id="tag-filter"
+      <label class="sr-only" for="category-filter">按分类筛选</label>
+      <select id="category-filter"
               class="rounded-xl border border-white/10 bg-slate-900/70 px-4 py-3 text-sm text-white outline-none focus:border-fuchsia-300/60 sm:w-52">
-        <option value="">全部标签</option>
-        {tag_options}
+        <option value="">全部分类</option>
+        {category_options}
       </select>
     </div>
 
@@ -103,30 +106,29 @@ def home() -> str:
 
   <script>
     const searchInput = document.getElementById("drama-search");
-    const tagFilter = document.getElementById("tag-filter");
+    const categoryFilter = document.getElementById("category-filter");
     const cards = Array.from(document.querySelectorAll(".drama-card"));
     const noResults = document.getElementById("no-results");
 
     function filterDramas() {{
       const query = searchInput.value.trim().toLocaleLowerCase();
-      const selectedTag = tagFilter.value;
+      const selectedCategory = categoryFilter.value;
       let visibleCount = 0;
 
       cards.forEach((card) => {{
         const titleMatches = card.dataset.title.toLocaleLowerCase().includes(query);
-        const tags = JSON.parse(card.dataset.tags);
-        const tagMatches = !selectedTag || tags.includes(selectedTag);
-        const isVisible = titleMatches && tagMatches;
+        const categoryMatches = !selectedCategory || card.dataset.category === selectedCategory;
+        const isVisible = titleMatches && categoryMatches;
 
-        card.hidden = !isVisible;
+        card.style.display = isVisible ? "" : "none";
         if (isVisible) visibleCount += 1;
       }});
 
-      noResults.hidden = visibleCount !== 0;
+      noResults.classList.toggle("hidden", visibleCount !== 0);
     }}
 
     searchInput.addEventListener("input", filterDramas);
-    tagFilter.addEventListener("change", filterDramas);
+    categoryFilter.addEventListener("change", filterDramas);
   </script>
 </body>
 </html>'''
