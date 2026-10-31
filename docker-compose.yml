@@ -3,12 +3,14 @@ services:
     build: .
     container_name: drama-mvp
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     env_file:
       - .env
     volumes:
       # Keep SQLite data when the container is rebuilt or replaced.
       - ./drama.db:/app/drama.db
+      # Migration backups remain available on the host.
+      - ./data:/app/data
       # The application also reads this file directly through python-dotenv.
       - ./.env:/app/.env:ro
     restart: unless-stopped

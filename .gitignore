@@ -3,3 +3,7 @@
 __pycache__/
 *.py[cod]
 drama.db
+.runtime/
+data/
+*.db-shm
+*.db-wal

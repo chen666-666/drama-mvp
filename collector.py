@@ -135,4 +135,4 @@ def collect_dramas(source_dramas: Iterable[dict[str, str]]) -> int:
 
 
 if __name__ == "__main__":
-    print("请运行 spider.py 抓取 TVmaze 公开数据并执行入库。")
+    print("spider.py 用于采集旧红果资料；抖音 Top3 请在工作台创建批次并导入候选。")

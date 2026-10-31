@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{ ranking.title }} · V{{ ranking.version }}</title>
+<style>body{font:16px/1.8 system-ui,"Microsoft YaHei",sans-serif;color:#172033;max-width:1000px;margin:48px auto;padding:0 24px}h1{font-size:28px}h2{font-size:22px;border-bottom:1px solid #ddd;padding-bottom:8px}a{color:#3156ba;overflow-wrap:anywhere}small{color:#536079}dl{display:grid;grid-template-columns:110px 1fr;gap:5px}dt{color:#536079}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}article{margin:32px 0;break-inside:avoid}table{border-collapse:collapse;width:100%;font-size:13px}td,th{border:1px solid #ddd;padding:8px;text-align:left}p{white-space:pre-wrap}.print{padding:8px 16px}@media print{body{margin:0;max-width:none}.print{display:none}a{color:inherit}}</style></head>
+<body><button class="print" onclick="window.print()">打印 / 保存 PDF</button>
+<h1>{{ ranking.title }}</h1><p>{{ ranking.disclaimer }}</p>
+<p>批次 {{ ranking.run_id }} · {{ ranking.run_name }} · 版本 V{{ ranking.version }} · 榜单 ID {{ ranking.id }}<br>
+截止 {{ ranking.cutoff_at_beijing }} · 生成 {{ ranking.generated_at_beijing }}<br>规则 {{ ranking.rule_version }} · {{ ranking.explanation }}</p>
+<p>实际检索记录 {{ ranking.coverage.search_hit_count }} 条，候选 {{ ranking.candidate_count }} 条，可排名作品 {{ ranking.qualified_series_count }} 部。
+实际关键词：{{ ranking.coverage.actual_keywords | join('、') or '未记录' }}。实际排序：{{ ranking.coverage.actual_sorts | join('、') or '未记录' }}。未记录的翻页量与全平台覆盖未知。</p>
+{% if ranking.collection_summary %}<p>最近完成的自动搜索任务 {{ ranking.collection_summary.job_id }}：{{ ranking.collection_summary.requests }} 次请求，完成 {{ ranking.collection_summary.pages_done }} 页，导入 {{ ranking.collection_summary.imported }} 条窗口内记录，跳过 {{ ranking.collection_summary.skipped }} 条，结果预算 {{ ranking.collection_summary.budget }} 条。批次来源总数另包含先前任务的成功记录；重复命中不重复创建视频。</p>{% endif %}
+{% if ranking.mode == 'official' %}<h2>官方来源核验</h2><p>发布主体：{{ ranking.official_metadata.publisher }} · 分类：{{ ranking.official_metadata.category }}<br>统计周期：{{ ranking.official_metadata.period_start | beijing }} 至 {{ ranking.official_metadata.period_end | beijing }}<br>更新时间：{{ ranking.official_metadata.updated_at | beijing }} · 指标：{{ ranking.official_metadata.metric }}<br><a href="{{ ranking.official_metadata.source_url }}">官方来源</a><br>{{ ranking.official_metadata.evidence_note }}</p>{% endif %}
+{% if ranking.shortfall %}<p><strong>{{ ranking.shortfall }}</strong></p>{% endif %}
+{% if ranking.representative_policy %}<p><strong>代表集规则：</strong>{{ ranking.representative_policy }}。</p>{% endif %}
+{% if ranking.review_scope %}<h2>核验范围与剩余事项</h2><p>作品与正片均通过 {{ ranking.review_scope.approved }} 条；待核验 {{ ranking.review_scope.pending }} 条；已排除 {{ ranking.review_scope.excluded }} 条；单独保留的多集合集 {{ ranking.review_scope.compilations }} 条。<br>{{ ranking.review_scope.assessment }}</p>{% endif %}
+<h2>入选 Top3</h2>
+{% for item in ranking['items'] if item.selected %}<article><h2>第 {{ item.position }} 名 · {{ item.series_title }}</h2><dl>
+<dt>作品与作者</dt><dd>作品 ID {{ item.series_id }} · {{ item.author_name }} · 账号 {{ item.author_account_id }}</dd>
+<dt>AI 制作</dt><dd>{{ item.ai_type }} · {{ item.ai_basis }}</dd>
+{% if item.title_note %}<dt>剧名说明</dt><dd>{{ item.title_note }}</dd>{% endif %}
+{% if item.content_note %}<dt>视频说明</dt><dd>{{ item.content_note }}</dd>{% endif %}
+<dt>代表集</dt><dd>{{ item.title }} · 视频 {{ item.video_id }}<br><a href="{{ item.original_url }}">{{ item.original_url }}</a></dd>
+<dt>互动与得分</dt><dd>点赞 {{ item.likes if item.likes is not none else '未知' }} · 评论 {{ item.comments if item.comments is not none else '未知' }} · 收藏 {{ item.favorites if item.favorites is not none else '未知' }} · 分享 {{ item.shares if item.shares is not none else '未知' }}<br>排序分 {{ item.score if item.score is not none else '按官方名次' }} · 口径 {{ {'weighted':'公开互动加权','likes':'公开点赞','official':'官方名次'}[ranking.scoring_mode] }}</dd>
+<dt>采样与发布</dt><dd>采样 {{ item.sampled_at_beijing }} · 发布 {{ item.published_at_beijing }}</dd>
+<dt>原作者入口</dt><dd>{% if item.author_url %}<a href="{{ item.author_url }}">作者主页</a>{% else %}作者主页未记录{% endif %} {% if item.collection_url %} · <a href="{{ item.collection_url }}">合集</a>{% endif %}</dd>
+<dt>核验与来源</dt><dd>{% for record in item.series_reviews + item.episode_reviews %}{{ {'approved':'通过','excluded':'排除','pending':'待核验','merged':'已归并','reassigned':'已纠正归属'}.get(record.status, record.status) }} · {{ record.reason }} · {{ record.reviewed_at | beijing }}<br><a href="{{ record.evidence_url }}">核验来源</a><br>{% endfor %}</dd></dl></article>{% else %}<p>本版本没有可入选作品，请补全候选并核验后生成新版本。</p>{% endfor %}
+<h2>候补</h2><p>{% for item in ranking['items'] if not item.selected %}第 {{ item.position }} 名 · {{ item.series_title }} · {{ item.author_name }} · {{ item.score if item.score is not none else '官方名次' }}<br>{% else %}暂无候补。{% endfor %}</p>
+<h2>候选缺口</h2><table><thead><tr><th>剧名 / 视频 ID</th><th>未入比较范围的原因</th><th>互动缺口</th></tr></thead><tbody>{% for row in ranking.candidates %}<tr><td>{{ row.series_title }} / {{ row.video_id or '链接待补全' }}</td><td>{{ row.exclusion_reasons | join('；') or '通过，按同剧代表集规则比较' }}</td><td>{{ row.missing_reason or '无' }}</td></tr>{% endfor %}</tbody></table>
+<p><small>本报告绑定固定榜单版本，后续修订会生成新版本。第一步仅交付筛选排名结果；来源证据及第二步入选名单见导出资料包。</small></p></body></html>

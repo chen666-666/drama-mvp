@@ -1,7 +1,10 @@
 .git/
 .venv/
+.runtime/
+data/
 __pycache__/
 *.py[cod]
 .env
 drama.db
 *.sqlite3
+*.docx
