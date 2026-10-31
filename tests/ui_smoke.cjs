@@ -12,19 +12,25 @@ const { chromium } = require(process.env.DRAMA_PLAYWRIGHT_MODULE || "playwright"
   const timestamp = offset => new Date(Date.now() + offset).toISOString();
   const beijingInput = offset => new Date(Date.now() + offset + 8*3600000).toISOString().slice(0,19);
   try {
-    await page.goto(base);
+    await page.goto(new URL("/workbench",base).href);
     await page.locator("#new-run").click();
     await page.waitForSelector("#run-form:not([hidden])");
     await page.locator('#run-form [name="name"]').fill("合成测试 · 页面验收");
     await page.locator('#run-form [name="cutoff_at"]').fill(beijingInput(-300000));
     await page.locator('#run-form button').click();
     await page.waitForSelector("#workspace:not([hidden])");
+    await page.waitForFunction(()=>document.querySelector('#run-select option:checked')?.textContent.includes('合成测试 · 页面验收') && document.getElementById('run-form').hidden);
     const fields = ["video_id","original_url","title","series_key","series_title","author_id","author_name","published_at","sampled_at","likes","comments","favorites","shares","keyword","sort_order","position"];
     const raw = [["900100","a","同名合成测试剧","a",100,2], ["900101","a","同名合成测试剧","a",300,2], ["900102","b","同名合成测试剧","b",200,""], ["900103","c","合成测试剧三","c",50,2], ["900104","d","合成测试剧四","d",25,2]];
     const rows = raw.map(([id,key,title,author,likes,shares])=>[id,`https://www.douyin.com/video/${id}`,`合成正片${id}`,key,title,author,`合成作者${author}`,timestamp(-2*86400000),timestamp(-60000),likes,1,1,shares,"AI短剧","点赞","前10条"]);
     const csv = [fields,...rows].map(row=>row.join(",")).join("\n");
     await page.locator('#csv-form input[type="file"]').setInputFiles({name:"synthetic.csv",mimeType:"text/csv",buffer:Buffer.from(csv,"utf8")});
-    await page.locator("#csv-form button").click();
+    const [importResponse] = await Promise.all([
+      page.waitForResponse(response=>response.url().includes('/import/csv')),
+      page.locator("#csv-form button").click()
+    ]);
+    const imported = await importResponse.json();
+    assert.equal(imported.imported,5,JSON.stringify(imported));
     await page.waitForFunction(()=>document.querySelectorAll("#candidate-rows tr").length === 5);
     assert.match(await page.locator("#similar-titles").innerText(), /同名/);
     await page.locator('[data-metadata="series"]').first().click();

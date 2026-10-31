@@ -164,3 +164,79 @@ class SearchJob(Base):
     message: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime)
     updated_at: Mapped[datetime] = mapped_column(DateTime)
+
+
+class DownloadCatalog(Base):
+    __tablename__ = "download_catalogs"
+    __table_args__ = (UniqueConstraint("ranking_id", "series_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ranking_id: Mapped[int] = mapped_column(ForeignKey("ranking_runs.id"))
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"))
+    cursor: Mapped[str] = mapped_column(Text, default="0")
+    source: Mapped[str] = mapped_column(Text, default="")
+    has_more: Mapped[bool] = mapped_column(default=True)
+    checked: Mapped[bool] = mapped_column(default=False)
+    total_episodes: Mapped[int | None] = mapped_column(nullable=True)
+    note: Mapped[str] = mapped_column(Text, default="公开总集数未知，目录待核对")
+    cover_url: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class DownloadEpisode(Base):
+    __tablename__ = "download_episodes"
+    __table_args__ = (UniqueConstraint("catalog_id", "video_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    catalog_id: Mapped[int] = mapped_column(ForeignKey("download_catalogs.id"))
+    video_id: Mapped[str] = mapped_column(String(100))
+    title: Mapped[str] = mapped_column(Text)
+    original_url: Mapped[str] = mapped_column(Text)
+    episode_number: Mapped[int | None] = mapped_column(nullable=True)
+    source_duration: Mapped[float | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(default="pending")
+    access: Mapped[str] = mapped_column(default="unknown")
+    note: Mapped[str] = mapped_column(Text, default="")
+    evidence_url: Mapped[str] = mapped_column(Text, default="")
+    review_history: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class DownloadJob(Base):
+    __tablename__ = "download_jobs"
+    __table_args__ = (UniqueConstraint("episode_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    episode_id: Mapped[int] = mapped_column(ForeignKey("download_episodes.id"))
+    status: Mapped[str] = mapped_column(default="queued", index=True)
+    trial: Mapped[bool] = mapped_column(default=False)
+    attempts: Mapped[int] = mapped_column(default=0)
+    max_attempts: Mapped[int] = mapped_column(default=3)
+    message: Mapped[str] = mapped_column(Text, default="等待下载工作进程")
+    tool: Mapped[str] = mapped_column(Text, default="")
+    bytes_downloaded: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class MediaFile(Base):
+    __tablename__ = "media_files"
+    __table_args__ = (UniqueConstraint("job_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("download_jobs.id"))
+    relative_path: Mapped[str] = mapped_column(Text)
+    size: Mapped[int] = mapped_column()
+    duration: Mapped[float] = mapped_column()
+    format: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str] = mapped_column(String(64))
+    tracks: Mapped[str] = mapped_column(Text)
+    validation_note: Mapped[str] = mapped_column(Text)
+    manual_status: Mapped[str] = mapped_column(default="pending")
+    manual_note: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class ExportRun(Base):
+    __tablename__ = "export_runs"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    ranking_id: Mapped[int] = mapped_column(ForeignKey("ranking_runs.id"))
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime)
+    relative_path: Mapped[str] = mapped_column(Text)
+    summary: Mapped[str] = mapped_column(Text)

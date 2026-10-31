@@ -13,7 +13,7 @@ import zipfile
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base
@@ -312,6 +312,12 @@ class APITests(unittest.TestCase):
         import main
         engine = create_engine("sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False})
         Base.metadata.create_all(engine)
+        factory = sessionmaker(bind=engine, autoflush=False)
+        with factory() as session:
+            session.add(Drama(title="合成首页隔离测试资料", cover_url="https://example.com/cover.jpg",
+                              description="合成测试简介", official_url="https://example.com/drama",
+                              ai_summary="合成测试摘要", ai_score=8.0, tags="[]"))
+            session.commit()
         def isolated():
             with Session(engine, autoflush=False) as session:
                 try:
@@ -322,8 +328,12 @@ class APITests(unittest.TestCase):
                     raise
         main.app.dependency_overrides[main.database_session] = isolated
         try:
-            with patch.object(main, "init_db"), patch.object(main, "recover_jobs"), TestClient(main.app) as client:
-                self.assertEqual(client.get("/").status_code, 200)
+            with patch.object(main, "init_db"), patch.object(main, "recover_jobs"), \
+                 patch.object(main, "SessionLocal", factory), TestClient(main.app) as client:
+                for path in ("/", "/legacy"):
+                    page = client.get(path)
+                    self.assertEqual(page.status_code, 200)
+                    self.assertIn("合成首页隔离测试资料", page.text)
                 self.assertEqual(client.get("/static/app.js").status_code, 200)
                 self.assertEqual(client.get("/api/import-template.csv").status_code, 200)
                 run = client.post("/api/runs", json={"name": "合成 API 测试", "cutoff_at": "2026-10-30T12:00:00+08:00"})

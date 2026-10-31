@@ -1,4 +1,4 @@
-"""Local Top3 workbench: import, verify, rank and export. No video downloads."""
+"""Local short-drama library with ranking and durable downloads."""
 from contextlib import asynccontextmanager
 from datetime import timedelta
 import json
@@ -224,18 +224,35 @@ class OfficialInput(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def home():
+    return library_page()
+
+
+@app.get("/workbench", response_class=HTMLResponse)
+def workbench():
     return TEMPLATES.get_template("index.html").render()
 
 
 @app.get("/legacy", response_class=HTMLResponse)
 def legacy():
-    from legacy import home as legacy_home
-    return legacy_home()
+    return library_page("hongguo")
+
+
+def library_page(active="all"):
+    from models import Drama
+    from legacy import parse_tags
+    with SessionLocal() as session:
+        dramas = session.scalars(select(Drama).order_by(Drama.id)).all()
+    return TEMPLATES.get_template("library.html").render(dramas=[{"drama": row, "tags": parse_tags(row.tags)} for row in dramas], active=active)
+
+
+@app.get("/downloads", response_class=HTMLResponse)
+def downloads_page():
+    return TEMPLATES.get_template("downloads.html").render()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "phase": "top3"}
+    return {"status": "ok", "phase": "downloads"}
 
 
 @app.get("/api/runs")
@@ -374,6 +391,10 @@ def ranking_report(ranking_id: int, session=Depends(database_session)):
 def download_export(ranking_id: int, session=Depends(database_session)):
     return Response(export_zip(get_ranking(session, ranking_id)), media_type="application/zip",
                     headers={"Content-Disposition": f'attachment; filename="douyin-top3-ranking-{ranking_id}.zip"'})
+
+
+from api_downloads import router_for
+app.include_router(router_for(database_session, local_write))
 
 
 if __name__ == "__main__":

@@ -7,3 +7,4 @@ drama.db
 data/
 *.db-shm
 *.db-wal
+*.migration.lock

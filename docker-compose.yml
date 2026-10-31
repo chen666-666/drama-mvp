@@ -14,3 +14,15 @@ services:
       # The application also reads this file directly through python-dotenv.
       - ./.env:/app/.env:ro
     restart: unless-stopped
+  download-worker:
+    build: .
+    command: ["python", "-m", "workers.download"]
+    env_file:
+      - .env
+    volumes:
+      - ./drama.db:/app/drama.db
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    depends_on:
+      - drama-mvp
+    restart: unless-stopped

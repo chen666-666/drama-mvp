@@ -113,12 +113,16 @@ async function loadRankings(selected) {
   $("#ranking-select").innerHTML = versions.length ? versions.map(item=>`<option value="${item.id}">V${item.version} · ${esc(item.created_at_beijing)} · ${esc({weighted:"互动加权",likes:"公开点赞",official:"官方名次"}[item.scoring_mode])}</option>`).join("") : '<option value="">尚未生成榜单</option>';
   if(selected) $("#ranking-select").value = selected;
   if(versions.length) await loadRanking(Number($("#ranking-select").value));
-  else { state.ranking = null; $("#report-link").hidden = true; $("#export-link").hidden = true; $("#ranking-content").className = "empty"; $("#ranking-content").textContent = "补全并核验候选后，生成第一份 Top3。合格作品不足三部时，会展示实际数量和原因。"; }
+  else { state.ranking = null; $("#report-link").hidden = true; $("#export-link").hidden = true; if($("#downloads-link")) $("#downloads-link").hidden = true; $("#ranking-content").className = "empty"; $("#ranking-content").textContent = "补全并核验候选后，生成第一份 Top3。合格作品不足三部时，会展示实际数量和原因。"; }
 }
 async function loadRanking(id) {
   const ranking = await api(`/api/rankings/${id}`); state.ranking = ranking;
   $("#report-link").hidden = false; $("#report-link").href = `/rankings/${id}/report`;
   $("#export-link").hidden = false; $("#export-link").href = `/api/rankings/${id}/export`;
+  let downloadsLink = $("#downloads-link");
+  if(!downloadsLink) { downloadsLink = document.createElement("a"); downloadsLink.id = "downloads-link"; downloadsLink.className = "button secondary"; $("#export-link").after(downloadsLink); }
+  downloadsLink.href = `/downloads?ranking_id=${id}`; downloadsLink.textContent = "第二步 · 剧集与下载 →";
+  downloadsLink.hidden = false;
   $("#ranking-content").className = "";
   $("#ranking-content").innerHTML = `<h3>${esc(ranking.title)}</h3><p class="muted">${esc(ranking.disclaimer)}</p><p class="muted">${esc(ranking.explanation)}</p>${ranking.review_scope ? `<p class="notice">${esc(ranking.review_scope.assessment)}<br>通过 ${ranking.review_scope.approved} 条 · 待核验 ${ranking.review_scope.pending} 条 · 排除 ${ranking.review_scope.excluded} 条 · 多集合集 ${ranking.review_scope.compilations} 条</p>` : ""}${ranking.representative_policy ? `<p class="muted">${esc(ranking.representative_policy)}</p>` : ""}${ranking.shortfall ? `<p class="notice">${esc(ranking.shortfall)}</p>` : ""}<div class="ranking-grid">${ranking.items.filter(item=>item.selected).map(item=>`<article class="rank-card"><span class="rank-number">${String(item.position).padStart(2,"0")}</span><h3>${esc(item.series_title)}</h3><p>${esc(item.author_name)} · ${esc(item.ai_type)}</p><p class="score">${item.score ?? "官方名次"}</p><small>${ranking.scoring_mode === "likes" ? "公开点赞数" : ranking.scoring_mode === "weighted" ? "自定义互动分" : "保留来源排名"}</small><p>${esc(item.ai_basis)}</p><small>${esc(item.title_note || "")}</small><a href="${esc(item.original_url)}" target="_blank" rel="noopener">查看代表集 ↗</a><small>视频 ${esc(item.video_id)}<br>${esc(item.sampled_at_beijing)}</small></article>`).join("")}</div><details open><summary>候补与比较范围</summary><p>${ranking.items.filter(item=>!item.selected).map(item=>`第 ${item.position} 名 · ${esc(item.series_title)} · ${esc(item.author_name)} · ${item.score ?? "官方名次"}`).join("<br>") || "暂无候补。"}</p><p class="muted">候选 ${ranking.candidate_count} 条，可排名作品 ${ranking.qualified_series_count} 部。实际检索记录 ${ranking.coverage.search_hit_count} 条。详见报告和 CSV 的来源及排除原因。</p></details>`;
 }

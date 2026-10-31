@@ -10,7 +10,7 @@ from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
 ROOT = Path(__file__).resolve().parents[1]
-REVISION = "003_metadata"
+REVISION = "004_downloads"
 
 
 def _upgrade(engine):

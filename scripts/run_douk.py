@@ -1,4 +1,4 @@
-"""Run the separately installed DouK API locally without downloading media."""
+"""Local DouK bridge for search, public directories and expiring media resolution."""
 import asyncio
 from pathlib import Path
 import sys
@@ -12,6 +12,9 @@ sys.path.insert(0, str(TOOL))
 async def main():
     from src.application import TikTokDownloader
     from src.interface.search import Search
+    from src.interface.detail import Detail
+    from src.interface.account import Account
+    from src.interface.mix import Mix
     from fastapi import FastAPI
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import JSONResponse
@@ -26,6 +29,41 @@ async def main():
         count: int = Field(default=10, ge=5, le=20)
         publish_time: int = 7
         cookie: str = Field(default="", max_length=50000, repr=False)
+
+    class MediaRequest(BaseModel):
+        video_id: str = Field(pattern=r"^[0-9]{1,100}$")
+        cookie: str = Field(default="", max_length=50000, repr=False)
+
+    class DirectoryRequest(BaseModel):
+        account: str = Field(default="", max_length=255)
+        mix_id: str = Field(default="", pattern=r"^[0-9]*$")
+        cursor: int = Field(default=0, ge=0)
+        cookie: str = Field(default="", max_length=50000, repr=False)
+
+    class Observed:
+        code = None
+        message = ""
+        received = False
+        more = False
+
+        async def request_data(self, *args, **kwargs):
+            value = await super().request_data(*args, **kwargs)
+            if isinstance(value, dict):
+                self.received = True
+                self.code, self.message = value.get("status_code"), str(value.get("status_msg", ""))
+                self.more = bool(value.get("has_more"))
+            return value
+
+    class PublicDetail(Observed, Detail): pass
+    class PublicAccount(Observed, Account): pass
+    class PublicMix(Observed, Mix): pass
+
+    def response_status(operation, data):
+        if operation.code == 2483 or "登录" in operation.message:
+            return "needs_login"
+        if operation.code not in (None, 0) or any(word in operation.message for word in ("验证", "频繁", "captcha")):
+            return "blocked"
+        return "ok" if operation.received and operation.code == 0 and isinstance(data, (dict, list)) else "unavailable"
 
     class ObservedSearch(Search):
         upstream_code = None
@@ -62,7 +100,9 @@ async def main():
         return {"aweme_id": video["aweme_id"], "desc": video.get("desc"), "create_time": video.get("create_time"),
                 "author": {key: author.get(key) for key in ("uid", "sec_uid", "nickname")},
                 "statistics": {key: stats.get(key) for key in ("digg_count", "comment_count", "collect_count", "share_count")},
-                "mix_info": {key: mix.get(key) for key in ("mix_id", "mix_name")}}
+                "mix_info": {key: mix.get(key) for key in ("mix_id", "mix_name")},
+                "duration": (video.get("video") or {}).get("duration"),
+                "cover": ((video.get("video") or {}).get("cover") or {}).get("url_list", [""])[0]}
 
     async with TikTokDownloader() as tool:
         # Disable upstream file logging, which may otherwise contain request headers.
@@ -109,6 +149,36 @@ async def main():
             return {"status": status, "message": note, "upstream_code": code,
                     "videos": [value for item in data if (value := public_video(item))],
                     "offset": operation.offset, "has_more": operation.more}
+
+        @app.post("/directory")
+        async def directory(body: DirectoryRequest):
+            if not body.mix_id and not body.account:
+                return {"status": "unavailable"}
+            if body.mix_id:
+                operation = PublicMix(tool.parameter, cookie=body.cookie, mix_id=body.mix_id, cursor=body.cursor, count=20)
+            else:
+                operation = PublicAccount(tool.parameter, cookie=body.cookie, sec_user_id=body.account, cursor=body.cursor, count=20, pages=1)
+            data = await operation.run(single_page=True)
+            return {"status": response_status(operation, data), "videos": [v for row in data if (v := public_video(row))],
+                    "cursor": operation.cursor, "has_more": operation.more}
+
+        @app.post("/media")
+        async def media(body: MediaRequest):
+            operation = PublicDetail(tool.parameter, cookie=body.cookie, detail_id=body.video_id)
+            data = await operation.run()
+            status = response_status(operation, data)
+            if status != "ok" or not isinstance(data, dict):
+                return {"status": status}
+            # Paid, private, deleted or image posts are never treated as downloadable public video.
+            if data.get("is_delete") or (data.get("status") or {}).get("is_private") or (data.get("series_paid_info") or {}).get("item_price", 0):
+                return {"status": "unavailable"}
+            video = data.get("video") or {}
+            urls = (video.get("play_addr") or {}).get("url_list") or []
+            if not urls:
+                return {"status": "unavailable"}
+            return {"status": "ok", "url": urls[0], "duration": video.get("duration", 0) / 1000 or None,
+                    "author_account_id": str((data.get("author") or {}).get("uid") or ""),
+                    "revision": (TOOL / "UPSTREAM_REVISION.txt").read_text().splitlines()[1]}
 
         try:
             await uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=int(os.getenv("DOUK_PORT", "5555")), log_level="warning")).serve()
