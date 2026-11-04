@@ -20,5 +20,9 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd ~/drama-mvp
+            if [ -f data/site/current.json ]; then
+              echo "Public releases are active; deploy code and data using the verified release procedure."
+              exit 1
+            fi
             git pull origin main
             sudo docker compose up -d --build

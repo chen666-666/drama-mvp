@@ -6,6 +6,13 @@ services:
       - "127.0.0.1:8000:8000"
     env_file:
       - .env
+    environment:
+      DOUK_BRIDGE_URL: http://douk:5555
+      DRAMA_SITE_MODE: manage
+      DRAMA_EPISODE_DISCOVERY: ${DRAMA_EPISODE_DISCOVERY:-0}
+    depends_on:
+      douk:
+        condition: service_healthy
     volumes:
       # Keep SQLite data when the container is rebuilt or replaced.
       - ./drama.db:/app/drama.db
@@ -19,10 +26,50 @@ services:
     command: ["python", "-m", "workers.download"]
     env_file:
       - .env
+    environment:
+      DOUK_BRIDGE_URL: http://douk:5555
+      DRAMA_SITE_MODE: manage
     volumes:
       - ./drama.db:/app/drama.db
       - ./data:/app/data
       - ./.env:/app/.env:ro
     depends_on:
-      - drama-mvp
+      drama-mvp:
+        condition: service_started
+      douk:
+        condition: service_healthy
+    restart: unless-stopped
+  discovery-worker:
+    build: .
+    command: ["python", "-m", "workers.episode_discovery"]
+    env_file:
+      - .env
+    environment:
+      DOUK_BRIDGE_URL: http://douk:5555
+      DRAMA_SITE_MODE: manage
+      DRAMA_EPISODE_DISCOVERY: ${DRAMA_EPISODE_DISCOVERY:-0}
+    volumes:
+      - ./drama.db:/app/drama.db
+      - ./data:/app/data
+      - ./.env:/app/.env:ro
+    depends_on:
+      drama-mvp:
+        condition: service_started
+      douk:
+        condition: service_healthy
+    restart: unless-stopped
+  douk:
+    build:
+      context: .
+      dockerfile: Dockerfile.douk
+    environment:
+      DOUK_HOST: 0.0.0.0
+      DOUK_PORT: "5555"
+    # No public port, .env or host data mount. The tool is installed in this image.
+    healthcheck:
+      test: ["CMD", "/app/data/tools/douk/.runtime/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5555/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
     restart: unless-stopped

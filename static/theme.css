@@ -1,0 +1,82 @@
+/* Shared visual foundation; no external fonts or assets. */
+:root{color-scheme:light;--bg:#f7f6f2;--panel:#fff;--text:#252723;--ink:var(--text);--muted:#73766e;--accent:#bc471f;--accent-hover:#a43b18;--accent-soft:#fbede5;--line:#e5e5dd;--pink:var(--accent);--amber:#94621b;--radius:16px;--shadow:0 8px 28px #24251d05}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:24px}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.75 "Segoe UI","Microsoft YaHei",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+a{color:var(--accent);text-decoration:none;text-underline-offset:4px}
+button,input,select,textarea{font:inherit}
+button,.button{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 18px;border:1px solid var(--accent);border-radius:9px;background:var(--accent);color:#fff;font-weight:600;line-height:1.65;cursor:pointer;transition:background .18s,border-color .18s,transform .18s}
+button:hover,.button:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+button:active,.button:active{transform:translateY(1px)}
+button:disabled,.button[aria-disabled=true]{opacity:.45;cursor:default}
+.subtle,.secondary{color:var(--text);background:var(--panel);border-color:#dcded4}
+.subtle:hover,.secondary:hover{color:var(--accent);background:var(--accent-soft);border-color:#dfb8a4}
+input,select,textarea{min-width:0;max-width:100%;padding:11px 13px;border:1px solid #dcded5;border-radius:9px;background:var(--panel);color:var(--text);outline:none;transition:border-color .18s,box-shadow .18s}
+input::placeholder,textarea::placeholder{color:#8c8f85}
+input:focus,select:focus,textarea:focus{border-color:var(--accent);box-shadow:0 0 0 3px #bc471f14}
+input[type=checkbox]{width:17px;height:17px;accent-color:var(--accent)}
+input[type=file]::file-selector-button{padding:6px 12px;margin-right:12px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text);cursor:pointer}
+textarea{width:100%;resize:vertical}
+label{display:block}
+h1,h2,h3,p{margin-top:0}
+h1{font-size:34px;line-height:1.35;letter-spacing:-1px}
+h2{font-size:23px;line-height:1.4;letter-spacing:-.5px}
+h3{font-size:18px;line-height:1.5}
+.muted,small{color:var(--muted)}
+.muted{font-size:13px}
+small{font-size:12px}
+.eyebrow,.step{font-size:10px;font-weight:700;letter-spacing:2px;color:var(--accent);margin:0 0 10px}
+.actions{display:flex;flex-wrap:wrap;gap:9px}
+.panel{padding:28px;border:1px solid var(--line);border-radius:var(--radius);background:var(--panel);box-shadow:var(--shadow)}
+.panel-heading,.section-heading{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:22px}
+.panel-heading h2,.section-heading h2{margin:0}
+.form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.form-grid label{font-size:12px;color:#5f655a}
+.form-grid input,.form-grid select,.form-grid textarea{width:100%;margin-top:7px}
+.span-all{grid-column:1/-1}
+.check{display:flex;align-items:flex-start;gap:9px;margin:14px 0;color:#596052;font-size:12px;font-weight:400}
+.check input{margin:3px 0 0;flex:none}
+.status-bar,.notice{padding:13px 17px;border:1px solid var(--line);border-radius:9px;margin:16px 0;background:#f6f7f2;color:#606956;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere}
+.status-bar.error,.modal-error{color:#af382d;border-color:#eac5bf}
+.status-bar.error{background:#fff4f0}
+.badge{display:inline-block;padding:3px 9px;border:1px solid var(--line);border-radius:6px;color:#656b5e;background:#f5f6f0;font-size:10px;font-weight:500}
+.badge.ok,.badge.approved{background:#edf5ec;color:#376845;border-color:#d8e8d5}
+.badge.warn{background:#fff5df;color:#8c651d;border-color:#efdfb9}
+.badge.excluded{color:#a14136;background:#fbedeb;border-color:#ecd2ce}
+.empty{padding:38px 22px;border:1px dashed #d9dcd0;border-radius:12px;background:#fff9;text-align:center;color:var(--muted);font-size:13px}
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:10px;margin-top:22px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{padding:14px 16px;text-align:left;color:#73796b;background:#f5f6f0;font-size:11px;font-weight:600;white-space:nowrap}
+td{min-width:135px;padding:20px 16px;border-top:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+tbody tr:hover{background:#fbfbf8}
+td strong{font-size:13px;font-weight:600}
+td small{display:block;margin:5px 0;font-size:11px}
+td button,td .button{padding:6px 9px;margin:3px 4px 3px 0;font-size:11px}
+details{margin:18px 0;font-size:12px}
+summary{padding:9px 0;cursor:pointer;color:#59634f;font-weight:500}
+details[open]>summary{color:var(--accent);margin-bottom:12px}
+dialog{width:min(620px,calc(100vw - 32px));max-height:90vh;padding:30px;overflow:auto;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--text);box-shadow:0 24px 90px #131c2833}
+dialog::backdrop{background:#151d27a6;backdrop-filter:blur(5px)}
+dialog label{margin-bottom:16px;font-size:12px;color:#5d6456}
+dialog label>input,dialog label>select,dialog label>textarea{display:block;width:100%;margin-top:7px}
+dialog label.check>input{width:17px;margin-top:3px}
+.close{padding:3px 11px;font-size:21px;line-height:1.5}
+.modal-error{font-size:12px;white-space:pre-wrap}
+footer{padding:24px 0;border-top:1px solid var(--line);color:#74796c;font-size:11px}
+:focus-visible{outline:3px solid #c96335;outline-offset:4px}
+::selection{background:#f3d4bc;color:#3a2b23}
+[hidden]{display:none!important}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(max-width:600px){
+.panel{padding:20px 16px;border-radius:13px}
+.panel-heading,.section-heading{align-items:flex-start;flex-wrap:wrap;gap:13px}
+.panel-heading h2,.section-heading h2{font-size:20px}
+.form-grid{grid-template-columns:1fr}
+button,.button{padding:10px 14px;font-size:12px}
+dialog{padding:22px 18px}
+}
+@media(prefers-reduced-motion:reduce){
+html{scroll-behavior:auto}
+*,*::before,*::after{transition:none!important;animation:none!important}
+}
+

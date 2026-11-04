@@ -8,7 +8,6 @@ from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -16,27 +15,50 @@ from sqlalchemy.exc import IntegrityError
 from database import SessionLocal, init_db
 from models import CollectionRun, Episode, Evidence, RankingRun, ReviewRecord, SearchJob, Series
 from services.common import KEYWORDS, beijing, iso, parse_time, public_url, utcnow
+from services.episode_numbers import EpisodeNumberInput
 from services.export import TEMPLATES, csv_text, export_zip, report_html
 from services.ranking import candidates, make_ranking
 from services.review import merge_series, review
 from services.metadata import update_metadata
 from sources.manual import CSV_FIELDS, import_csv, import_links
 from sources.douk import DouKSource, SESSION_PATH, save_session, session_status
-from services.search import dispatch, job_dict, prepare_job, prepare_resume, recover_jobs
+from services.search import dispatch, job_dict, prepare_job, prepare_resume, recover_jobs as recover_search_jobs
+from services.site import public_mode
+from services.web_assets import BrowserStaticFiles, PublicTextCompression
 
 ROOT = Path(__file__).resolve().parent
 search_start_lock = threading.Lock()
 
 
+def recover_jobs():
+    from services import review_workflows
+    from sqlalchemy import text
+    from services.downloads import backfill_reused_media
+    with SessionLocal() as session:
+        session.execute(text("BEGIN IMMEDIATE"))
+        backfill_reused_media(session)
+        session.commit()
+    recover_search_jobs()
+    review_workflows.recover()
+    return review_workflows.start_scheduler()
+
+
 @asynccontextmanager
 async def lifespan(app):
     init_db()
-    recover_jobs()
+    stop = None
+    if not public_mode():
+        stop = recover_jobs()
     yield
+    if stop:
+        stop.set()
 
 
 app = FastAPI(title="抖音 AI 短剧 Top3 工作台", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
+import auth
+auth.install(app)
+app.add_middleware(PublicTextCompression, minimum_size=1000, compresslevel=5)
+app.mount("/static", BrowserStaticFiles(directory=ROOT / "static"), name="static")
 
 
 def database_session():
@@ -85,19 +107,18 @@ class CSVInput(BaseModel):
 
 
 class SearchInput(BaseModel):
+    refresh_only: bool = False
     sorts: list[str] = Field(default_factory=lambda: ["general", "likes", "latest"], max_length=3)
     pages: int = Field(default=1, ge=1, le=3)
 
 
 def local_write(request):
-    """Login data and collection control are accepted only by the local workbench."""
-    allowed = ("127.0.0.1", "localhost", "::1", "testserver")
-    if request.url.hostname not in allowed or request.client and request.client.host not in allowed + ("testclient",):
-        raise HTTPException(403, "请在本机工作台操作")
-    origin = request.headers.get("origin")
-    if origin and (urlparse(origin).hostname not in allowed or
-                   urlparse(origin).netloc != request.url.netloc):
-        raise HTTPException(403, "请从当前工作台页面操作")
+    auth.require_write(request)
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page():
+    return TEMPLATES.get_template("login.html").render()
 
 
 @app.get("/api/source/douk/status")
@@ -139,7 +160,8 @@ def search_jobs(run_id: int, session=Depends(database_session)):
 def start_search(run_id: int, data: SearchInput, request: Request, session=Depends(database_session)):
     local_write(request)
     with search_start_lock:
-        job = prepare_job(session, get_run(session, run_id), data.sorts, data.pages)
+        session.connection().exec_driver_sql("BEGIN IMMEDIATE")
+        job = prepare_job(session, get_run(session, run_id), data.sorts, data.pages, refresh_only=data.refresh_only)
         result = job_dict(job)
         session.commit()
         dispatch(result["id"])
@@ -203,7 +225,7 @@ class SeriesMetadataInput(BaseModel):
 
 
 class EpisodeMetadataInput(BaseModel):
-    episode_number: int | None = Field(default=None, ge=1)
+    episode_number: EpisodeNumberInput = None
     content_kind: str = "unknown"
     content_note: str = Field(default="", max_length=5000)
     reason: str = Field(min_length=1, max_length=10000)
@@ -223,8 +245,8 @@ class OfficialInput(BaseModel):
 
 
 @app.get("/", response_class=HTMLResponse)
-def home():
-    return library_page()
+def home(ranking_id: int | None = None, area: str | None = None):
+    return HTMLResponse(library_page(active=area if area in ("all", "manual", "hongguo") else "douyin", ranking_id=ranking_id), headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/workbench", response_class=HTMLResponse)
@@ -233,26 +255,82 @@ def workbench():
 
 
 @app.get("/legacy", response_class=HTMLResponse)
-def legacy():
-    return library_page("hongguo")
+def legacy(ranking_id: int | None = None):
+    return HTMLResponse(library_page("hongguo", ranking_id), headers={"Cache-Control": "no-cache"})
 
 
-def library_page(active="all"):
+def library_page(active="douyin", ranking_id=None):
     from models import Drama
-    from legacy import parse_tags
+    from legacy import library_tags
+    from services.site import daily_rankings, library_detail, manual_library
     with SessionLocal() as session:
-        dramas = session.scalars(select(Drama).order_by(Drama.id)).all()
-    return TEMPLATES.get_template("library.html").render(dramas=[{"drama": row, "tags": parse_tags(row.tags)} for row in dramas], active=active)
+        dramas = session.scalars(select(Drama).order_by(Drama.ai_score.desc(), Drama.created_at.desc(), Drama.id)).all()
+        rankings = session.scalars(select(RankingRun).order_by(RankingRun.id.desc())).all()
+        snapshots = {row.id: json.loads(row.snapshot) for row in rankings}
+        chosen = next((row for row in rankings if row.id == ranking_id), rankings[0] if rankings else None)
+        visible_rankings = daily_rankings(rankings)
+        if ranking_id is None or not any(row.id == ranking_id for row in rankings):
+            chosen = visible_rankings[0] if visible_rankings else None
+        elif chosen not in visible_rankings:
+            from services.common import parse_time, beijing
+            day = beijing(parse_time(snapshots[chosen.id]["cutoff_at"]))[:10]
+            chosen = next(row for row in visible_rankings if beijing(parse_time(snapshots[row.id]["cutoff_at"]))[:10] == day)
+        manual_entries = manual_library(session)
+        bootstrap = {"rankings": [{"id": row.id, "version": row.version, "name": snapshots[row.id]["run_name"]}
+                                   for row in visible_rankings],
+                     "detail": library_detail(session, chosen.id, snapshots[chosen.id]) if chosen else None}
+    drama_rows = [{"drama": row, "tags": library_tags(row.tags)} for row in dramas]
+    tags = sorted({tag for row in drama_rows for tag in row["tags"]})
+    return TEMPLATES.get_template("library.html").render(dramas=drama_rows, hongguo_tags=tags,
+        active=active, public_site=public_mode(), bootstrap=bootstrap, manual_entries=manual_entries)
 
 
 @app.get("/downloads", response_class=HTMLResponse)
 def downloads_page():
+    if public_mode():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse("/", status_code=303)
     return TEMPLATES.get_template("downloads.html").render()
+
+
+@app.get("/watch", response_class=HTMLResponse)
+def watch_page(ranking_id: str | None = None, series_id: str | None = None, catalog_id: str | None = None, session=Depends(database_session)):
+    from services.site import library_detail
+    initial = None
+    if catalog_id and catalog_id.isascii() and catalog_id.isdecimal() and len(catalog_id) <= 18:
+        from models import DownloadCatalog
+        from services.site import manual_detail
+        catalog = session.get(DownloadCatalog, int(catalog_id))
+        if catalog:
+            try:
+                initial = manual_detail(session, catalog)
+            except ValueError:
+                pass
+    if ranking_id and ranking_id.isdecimal() and len(ranking_id) <= 18 and series_id and series_id.isdecimal():
+        ranking = session.get(RankingRun, int(ranking_id))
+        if ranking:
+            initial = library_detail(session, ranking.id, json.loads(ranking.snapshot))
+    return HTMLResponse(TEMPLATES.get_template("watch.html").render(manage_player=False, initial_playback=initial, public_site=public_mode()),
+                        headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/downloads/watch", response_class=HTMLResponse)
+def download_watch_page():
+    return TEMPLATES.get_template("watch.html").render(manage_player=True)
+
+
+@app.get("/publish", response_class=HTMLResponse)
+def publishing_page(request: Request):
+    if request.client.host not in ("127.0.0.1", "::1", "testclient"):
+        raise HTTPException(403, "请在本机打开发布页面")
+    return TEMPLATES.get_template("publish.html").render()
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "phase": "downloads"}
+    import os
+    return {"status": "ok", "phase": "downloads", "mode": "public" if public_mode() else "local",
+            "release_id": os.getenv("DRAMA_SITE_RELEASE")}
 
 
 @app.get("/api/runs")
@@ -274,12 +352,20 @@ def create_run(data: RunInput, session=Depends(database_session)):
                         keywords=json.dumps(keywords, ensure_ascii=False), rule_version="public-interactions-v1", official_metadata="{}")
     session.add(run)
     session.flush()
+    from services.candidate_pool import seed
+    seed(session, run)
     return run_dict(run)
 
 
 @app.get("/api/runs/{run_id}/candidates")
 def list_candidates(run_id: int, session=Depends(database_session)):
     return candidates(session, get_run(session, run_id))
+
+
+@app.get("/api/runs/{run_id}/candidate-summary")
+def candidate_summary(run_id: int, session=Depends(database_session)):
+    from services.candidate_pool import summary
+    return summary(candidates(session, get_run(session, run_id)))
 
 
 @app.get("/api/import-template.csv")
@@ -367,6 +453,7 @@ def rankings(run_id: int, session=Depends(database_session)):
 
 @app.post("/api/runs/{run_id}/rankings", status_code=201)
 def generate_ranking(run_id: int, session=Depends(database_session)):
+    session.connection().exec_driver_sql("BEGIN IMMEDIATE")
     return make_ranking(session, get_run(session, run_id))
 
 
@@ -384,6 +471,10 @@ def ranking_detail(ranking_id: int, session=Depends(database_session)):
 
 @app.get("/rankings/{ranking_id}/report", response_class=HTMLResponse)
 def ranking_report(ranking_id: int, session=Depends(database_session)):
+    if public_mode():
+        from services.site import public_snapshot
+        snapshot = get_ranking(session, ranking_id)
+        return TEMPLATES.get_template("public_report.html").render(ranking=public_snapshot(snapshot))
     return report_html(get_ranking(session, ranking_id))
 
 
@@ -395,6 +486,15 @@ def download_export(ranking_id: int, session=Depends(database_session)):
 
 from api_downloads import router_for
 app.include_router(router_for(database_session, local_write))
+
+from api_control import router_for as control_router
+app.include_router(control_router(database_session))
+from api_workflows import router_for as workflow_router
+app.include_router(workflow_router(database_session, local_write))
+from api_discovery import router_for as discovery_router
+app.include_router(discovery_router(database_session, local_write))
+from api_publishing import router_for as publishing_router
+app.include_router(publishing_router(local_write))
 
 
 if __name__ == "__main__":

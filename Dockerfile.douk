@@ -1,0 +1,10 @@
+FROM python:3.12-slim-bookworm
+WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates nodejs npm libstdc++6 && rm -rf /var/lib/apt/lists/*
+COPY scripts/install_douk.py /app/scripts/install_douk.py
+RUN python /app/scripts/install_douk.py
+COPY scripts/run_douk.py /app/scripts/run_douk.py
+COPY sources/bridge_scheduler.py /app/sources/bridge_scheduler.py
+ENV DOUK_HOST=0.0.0.0 DOUK_PORT=5555
+CMD ["/app/data/tools/douk/.runtime/bin/python", "/app/scripts/run_douk.py"]

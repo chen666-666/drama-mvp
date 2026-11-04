@@ -11,7 +11,7 @@ from sqlalchemy import select, update
 from database import SessionLocal, init_db
 from models import DownloadCatalog, DownloadEpisode, DownloadJob, MediaFile
 from services.common import iso, utcnow
-from services.downloads import DATA, inside, safe_name, selected_item
+from services.downloads import DATA, inside, safe_name, catalog_item
 from services.media import thumbnail, validate
 from sources.download import DouKDownloader
 from sources.douk import SourceUnavailable
@@ -73,9 +73,15 @@ def process_one(job_id, factory=SessionLocal, downloader=None):
             return
         catalog = session.get(DownloadCatalog, episode.catalog_id)
         catalog_id = catalog.id
-        item = selected_item(session, catalog.ranking_id, catalog.series_id)
+        try:
+            item = catalog_item(session, catalog)
+        except ValueError:
+            job.status, job.message = "paused", "作品核验或收录范围变更，请核对后恢复"
+            return
         video_id, source_duration = episode.video_id, episode.source_duration
-        folder = f"videos/榜单{catalog.ranking_id}/{item['position']:02d}_{safe_name(item['series_title'])}_{safe_name(item['author_name'])}"
+        folder = (f"videos/指定收录{catalog.id}/{safe_name(item['series_title'])}_{safe_name(item['author_name'])}"
+                  if catalog.ranking_id is None else
+                  f"videos/榜单{catalog.ranking_id}/{item['position']:02d}_{safe_name(item['series_title'])}_{safe_name(item['author_name'])}")
         label = f"EP{episode.episode_number:03d}" if episode.episode_number else "集号待确认"
         filename = f"{safe_name(item['series_title'])}_{label}_{video_id}"
     temporary = inside(DATA, f"tmp/job-{job_id}.part")
@@ -159,6 +165,9 @@ def process_one(job_id, factory=SessionLocal, downloader=None):
 
 
 def main():
+    from services.site import public_mode
+    if public_mode():
+        raise RuntimeError("公开展示模式不运行下载工作进程")
     init_db()
     try:
         with exclusive_worker():

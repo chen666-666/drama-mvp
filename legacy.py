@@ -1,4 +1,5 @@
 import json
+import unicodedata
 from html import escape
 
 from jinja2 import Environment
@@ -17,6 +18,18 @@ def parse_tags(tags: str) -> list[str]:
     except json.JSONDecodeError:
         pass
     return []
+
+
+def library_tags(tags: str) -> list[str]:
+    """Normalize display labels without changing the stored source metadata."""
+    aliases = {"悬疑题材": "悬疑", "穿越题材": "穿越", "逆袭题材": "逆袭"}
+    normalized = []
+    for tag in parse_tags(tags):
+        label = unicodedata.normalize("NFKC", tag).strip().lstrip("#").strip()
+        label = aliases.get(label, label)
+        if label and label not in normalized:
+            normalized.append(label)
+    return normalized
 
 
 def home() -> str:

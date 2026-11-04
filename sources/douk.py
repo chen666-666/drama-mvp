@@ -1,6 +1,7 @@
 """Public-data adapter for the separate, local GPL-3.0 DouK process."""
 from datetime import datetime, timezone
 from pathlib import Path
+import os
 import json
 import re
 from urllib.parse import quote
@@ -12,15 +13,26 @@ from sources.base import SourceCapabilities
 
 ROOT = Path(__file__).resolve().parents[1]
 SESSION_PATH = ROOT / "data/private/douyin-session.json"
-BRIDGE = "http://127.0.0.1:5555"
+BRIDGE = os.getenv("DOUK_BRIDGE_URL", "http://127.0.0.1:5555").rstrip("/")
 SORTS = {"general": (0, "综合"), "likes": (1, "点赞"), "latest": (2, "最新")}
 UPSTREAM = "https://github.com/JoeanAmier/TikTokDownloader"
 
 
+DETAIL_FAILURE_NOTES = {
+    "self_only": "抖音详情接口提示审核后仅作者本人可见，未提供公开详情与互动；请核对原视频后处理，不自动排除",
+    "audit_not_pass": "抖音详情接口提示视频审核未通过，未提供当前详情与互动；请核对原视频后处理，不自动排除",
+    "empty_detail": "抖音详情接口未返回视频详情，无法取得当前互动；可重试或补充真实采样",
+    "identity_mismatch": "详情返回的视频编号不一致，本次采样未保存，请核对来源",
+    "malformed_detail": "视频详情结构异常，本次采样未保存，请核对来源",
+    "restricted": "来源提示视频已删除、私密或付费，无法确认公开访问；请核对原视频后处理",
+}
+
+
 class SourceUnavailable(RuntimeError):
-    def __init__(self, status, message):
+    def __init__(self, status, message, reason_code=None):
         super().__init__(message)
         self.status = status
+        self.reason_code = reason_code if isinstance(reason_code, str) and reason_code in DETAIL_FAILURE_NOTES else None
 
 
 def save_session(cookie):
@@ -84,6 +96,29 @@ class DouKSource:
             raise SourceUnavailable("failed", "搜索响应缺少视频列表，尚未导入任何推测数据")
         return result
 
+    def refresh_video(self, video_id):
+        """Fetch statistics by known ID without relying on keyword search position."""
+        messages = {"needs_login": "来源需要登录，请更新登录后恢复",
+                    "blocked": "来源需要验证，请处理后恢复",
+                    "unavailable": "视频已删除、私密、付费或无法确认公开访问",
+                    "failed": "视频详情更新失败，请稍后重试"}
+        try:
+            with httpx.Client(trust_env=False, timeout=45) as client:
+                response = client.post(BRIDGE + "/detail", json={"video_id": video_id, "cookie": _cookie()})
+                response.raise_for_status()
+                result = response.json()
+        except (httpx.HTTPError, ValueError):
+            raise SourceUnavailable("failed", messages["failed"])
+        if result.get("status") != "ok":
+            status = result.get("status") if result.get("status") in messages else "failed"
+            reason = result.get("reason")
+            if isinstance(reason, str) and reason in DETAIL_FAILURE_NOTES:
+                raise SourceUnavailable(status, DETAIL_FAILURE_NOTES[reason], reason)
+            raise SourceUnavailable(status, messages[status])
+        if not isinstance(result.get("video"), dict):
+            raise SourceUnavailable("failed", DETAIL_FAILURE_NOTES["empty_detail"], "empty_detail")
+        return result["video"]
+
 
 def normalize_video(video, keyword, sort_order, position, sampled_at):
     """Never infer a verified series from a title or a keyword."""
@@ -104,7 +139,7 @@ def normalize_video(video, keyword, sort_order, position, sampled_at):
            "series_title": str(mix.get("mix_name") or f"待确认作品 · {title[:60]}"),
            "collection_url": f"https://www.douyin.com/collection/{mix['mix_id']}" if mix.get("mix_id") else "",
            "published_at": iso(published), "sampled_at": iso(sampled_at), "searched_at": iso(sampled_at),
-           "keyword": keyword, "sort_order": SORTS[sort_order][1], "position": str(position),
+           "keyword": keyword, "sort_order": SORTS[sort_order][1] if sort_order else "", "position": str(position),
            "source_url": f"https://www.douyin.com/search/{quote(keyword, safe='')}?type=video"}
     for name, source_name in (("likes", "digg_count"), ("comments", "comment_count"), ("favorites", "collect_count"), ("shares", "share_count")):
         value = statistics.get(source_name)

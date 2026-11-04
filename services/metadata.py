@@ -3,6 +3,7 @@ import json
 
 from models import Episode, Evidence, ReviewRecord, Series
 from services.common import public_url, utcnow
+from services.episode_numbers import parse_episode_number
 
 
 def update_metadata(session, kind, target_id, data):
@@ -23,14 +24,13 @@ def update_metadata(session, kind, target_id, data):
         if target.review_status == "approved" and any(text in values["ai_basis"] for text in ("没有剧情", "不是短剧", "无法确认AI", "无法确认 AI")):
             raise ValueError("依据与通过状态矛盾，请先将作品转为待核验")
     else:
-        number = data.get("episode_number")
-        if number is not None and (isinstance(number, bool) or not isinstance(number, int) or number < 1):
-            raise ValueError("集号须为正整数，未知或合集留空")
+        number, span = parse_episode_number(data.get("episode_number"))
         if data.get("content_kind") not in ("unknown", "single", "compilation"):
             raise ValueError("请选择单集、合集或未标注")
         if data["content_kind"] == "compilation" and number is not None:
             raise ValueError("多集合辑不能填写单一集号")
-        values = {"episode_number": number, "content_kind": data["content_kind"],
+        values = {"episode_number": number, "episode_range": span,
+                  "content_kind": "compilation" if span else data["content_kind"],
                   "content_note": data.get("content_note", "").strip()}
     changes = {key: {"before": getattr(target, key), "after": value}
                for key, value in values.items() if getattr(target, key) != value}

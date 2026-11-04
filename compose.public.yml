@@ -1,0 +1,22 @@
+# Standalone example only: do not combine with docker-compose.yml.
+# The activation script generates a per-release equivalent using a retained image.
+services:
+  drama-mvp:
+    build: .
+    container_name: drama-mvp
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      DRAMA_SITE_MODE: public
+      DRAMA_SITE_RELEASE: ${DRAMA_SITE_RELEASE:?select the verified release id}
+      DRAMA_DATABASE_URL: "sqlite:///file:/app/drama.db?mode=ro&uri=true"
+    volumes:
+      - ${DRAMA_PUBLIC_RELEASE:?select a verified release}/public.db:/app/drama.db:ro
+      - ./data/videos:/app/data/videos:ro
+      - ${DRAMA_PUBLIC_RELEASE}/data/thumbnails:/app/data/thumbnails:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

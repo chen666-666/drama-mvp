@@ -5,7 +5,7 @@ from models import Episode, Evidence, ReviewRecord, Series
 from services.common import public_url, utcnow
 
 
-def review(session, data):
+def review(session, data, *, require_evidence=True):
     kind = data["target_type"]
     model = {"series": Series, "episode": Episode}.get(kind)
     if model is None or data["status"] not in ("pending", "approved", "excluded"):
@@ -15,7 +15,7 @@ def review(session, data):
         raise ValueError("核验对象不存在")
     checks = data.get("checks", {})
     reason = data.get("reason", "").strip()
-    evidence_url = public_url(data.get("evidence_url"))
+    evidence_url = public_url(data.get("evidence_url"), required=require_evidence)
     if not reason:
         raise ValueError("请填写核验理由和来源说明")
     if data["status"] == "approved":

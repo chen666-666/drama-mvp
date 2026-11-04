@@ -12,8 +12,9 @@
 {% if ranking.mode == 'official' %}<h2>官方来源核验</h2><p>发布主体：{{ ranking.official_metadata.publisher }} · 分类：{{ ranking.official_metadata.category }}<br>统计周期：{{ ranking.official_metadata.period_start | beijing }} 至 {{ ranking.official_metadata.period_end | beijing }}<br>更新时间：{{ ranking.official_metadata.updated_at | beijing }} · 指标：{{ ranking.official_metadata.metric }}<br><a href="{{ ranking.official_metadata.source_url }}">官方来源</a><br>{{ ranking.official_metadata.evidence_note }}</p>{% endif %}
 {% if ranking.shortfall %}<p><strong>{{ ranking.shortfall }}</strong></p>{% endif %}
 {% if ranking.representative_policy %}<p><strong>代表集规则：</strong>{{ ranking.representative_policy }}。</p>{% endif %}
-{% if ranking.review_scope %}<h2>核验范围与剩余事项</h2><p>作品与正片均通过 {{ ranking.review_scope.approved }} 条；待核验 {{ ranking.review_scope.pending }} 条；已排除 {{ ranking.review_scope.excluded }} 条；单独保留的多集合集 {{ ranking.review_scope.compilations }} 条。<br>{{ ranking.review_scope.assessment }}</p>{% endif %}
+{% if ranking.review_scope %}<h2>核验范围与剩余事项</h2><p>作品与正片均通过 {{ ranking.review_scope.approved }} 条；待核验 {{ ranking.review_scope.pending }} 条；已排除 {{ ranking.review_scope.excluded }} 条；{% if ranking.comparison_policy_version == 'video-representative-v3' %}上述候选中含多集合集{% else %}单独保留的多集合集{% endif %} {{ ranking.review_scope.compilations }} 条。<br>{{ ranking.review_scope.assessment }}</p>{% endif %}
 <h2>入选 Top3</h2>
+{% if ranking.candidate_summary %}<p>本批候选 {{ ranking.candidate_summary.total }} 条，其中从已有批次补入 {{ ranking.candidate_summary.carried }} 条。本批已取得互动 {{ ranking.candidate_summary.refreshed }} 条；未超过自动收录点赞门槛 {{ ranking.candidate_summary.below_threshold }} 条。已有候选按视频编号更新互动，不将历史搜索记成本次搜索命中。</p>{% endif %}
 {% for item in ranking['items'] if item.selected %}<article><h2>第 {{ item.position }} 名 · {{ item.series_title }}</h2><dl>
 <dt>作品与作者</dt><dd>作品 ID {{ item.series_id }} · {{ item.author_name }} · 账号 {{ item.author_account_id }}</dd>
 <dt>AI 制作</dt><dd>{{ item.ai_type }} · {{ item.ai_basis }}</dd>

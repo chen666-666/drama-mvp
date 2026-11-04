@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from database import Base
@@ -76,6 +76,7 @@ class Episode(Base):
     title: Mapped[str] = mapped_column(Text, default="")
     original_url: Mapped[str] = mapped_column(Text)
     episode_number: Mapped[int | None] = mapped_column(nullable=True)
+    episode_range: Mapped[str | None] = mapped_column(String(31), nullable=True)
     content_kind: Mapped[str] = mapped_column(String(20), default="unknown")
     content_note: Mapped[str] = mapped_column(Text, default="")
     published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -154,6 +155,20 @@ class RankingItem(Base):
     detail: Mapped[str] = mapped_column(Text)
 
 
+class RunCandidate(Base):
+    """Explicit carry-over membership; never pretend an old hit is a new search."""
+    __tablename__ = "run_candidates"
+    __table_args__ = (UniqueConstraint("run_id", "episode_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("collection_runs.id"))
+    episode_id: Mapped[int] = mapped_column(ForeignKey("episodes.id"))
+    source_hit_id: Mapped[int] = mapped_column(ForeignKey("search_hits.id"))
+    metric_snapshot_id: Mapped[int | None] = mapped_column(ForeignKey("metric_snapshots.id"), nullable=True)
+    refresh_status: Mapped[str] = mapped_column(String(20), default="pending")
+    refresh_note: Mapped[str] = mapped_column(Text, default="等待更新本批次互动")
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class SearchJob(Base):
     __tablename__ = "search_jobs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -168,10 +183,13 @@ class SearchJob(Base):
 
 class DownloadCatalog(Base):
     __tablename__ = "download_catalogs"
-    __table_args__ = (UniqueConstraint("ranking_id", "series_id"),)
+    __table_args__ = (UniqueConstraint("ranking_id", "series_id"),
+                     Index("uq_manual_catalog_series", "series_id", unique=True, sqlite_where=text("ranking_id IS NULL")),)
     id: Mapped[int] = mapped_column(primary_key=True)
-    ranking_id: Mapped[int] = mapped_column(ForeignKey("ranking_runs.id"))
+    ranking_id: Mapped[int | None] = mapped_column(ForeignKey("ranking_runs.id"), nullable=True)
     series_id: Mapped[int] = mapped_column(ForeignKey("series.id"))
+    published: Mapped[bool] = mapped_column(default=False, server_default="0")
+    source_url: Mapped[str] = mapped_column(Text, default="", server_default="")
     cursor: Mapped[str] = mapped_column(Text, default="0")
     source: Mapped[str] = mapped_column(Text, default="")
     has_more: Mapped[bool] = mapped_column(default=True)
@@ -191,12 +209,15 @@ class DownloadEpisode(Base):
     title: Mapped[str] = mapped_column(Text)
     original_url: Mapped[str] = mapped_column(Text)
     episode_number: Mapped[int | None] = mapped_column(nullable=True)
+    episode_range: Mapped[str | None] = mapped_column(String(31), nullable=True)
     source_duration: Mapped[float | None] = mapped_column(nullable=True)
     status: Mapped[str] = mapped_column(default="pending")
     access: Mapped[str] = mapped_column(default="unknown")
     note: Mapped[str] = mapped_column(Text, default="")
     evidence_url: Mapped[str] = mapped_column(Text, default="")
     review_history: Mapped[str] = mapped_column(Text, default="[]")
+    reused_media_id: Mapped[int | None] = mapped_column(ForeignKey("media_files.id"), nullable=True)
+    reused_sha256: Mapped[str] = mapped_column(String(64), default="", server_default="")
 
 
 class DownloadJob(Base):
@@ -233,6 +254,21 @@ class MediaFile(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
+class ReviewWorkflow(Base):
+    __tablename__ = "review_workflows"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    operation_key: Mapped[str] = mapped_column(String(64), unique=True)
+    run_id: Mapped[int] = mapped_column(ForeignKey("collection_runs.id"))
+    ranking_id: Mapped[int | None] = mapped_column(ForeignKey("ranking_runs.id"), nullable=True)
+    search_job_id: Mapped[int | None] = mapped_column(ForeignKey("search_jobs.id"), nullable=True)
+    status: Mapped[str] = mapped_column(String(30), default="active")
+    stage: Mapped[str] = mapped_column(String(30), default="review")
+    message: Mapped[str] = mapped_column(Text, default="")
+    payload: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
 class ExportRun(Base):
     __tablename__ = "export_runs"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -240,3 +276,81 @@ class ExportRun(Base):
     cutoff_at: Mapped[datetime] = mapped_column(DateTime)
     relative_path: Mapped[str] = mapped_column(Text)
     summary: Mapped[str] = mapped_column(Text)
+
+
+class DiscoveryTask(Base):
+    """One durable coordinator per stable series; rounds share historical cursors."""
+    __tablename__ = "discovery_tasks"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"), unique=True)
+    status: Mapped[str] = mapped_column(String(30), default="queued", index=True)
+    round: Mapped[int] = mapped_column(default=1)
+    config: Mapped[str] = mapped_column(Text, default="{}")
+    progress: Mapped[str] = mapped_column(Text, default="{}")
+    message: Mapped[str] = mapped_column(Text, default="等待补集工作进程")
+    owner: Mapped[str] = mapped_column(String(64), default="")
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class DiscoverySource(Base):
+    __tablename__ = "discovery_sources"
+    __table_args__ = (UniqueConstraint("task_id", "kind", "mode", "object_key"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("discovery_tasks.id"))
+    provider: Mapped[str] = mapped_column(default="DouK")
+    revision: Mapped[str] = mapped_column(default="e327b9549d284a8b1613566f949fe2dbb8a6c2a1")
+    kind: Mapped[str] = mapped_column(String(20))
+    mode: Mapped[str] = mapped_column(String(20))
+    object_key: Mapped[str] = mapped_column(Text)
+    cursor: Mapped[str] = mapped_column(Text, default="0")
+    ended: Mapped[bool] = mapped_column(default=False)
+    state: Mapped[str] = mapped_column(default="pending")
+    progress: Mapped[str] = mapped_column(Text, default="{}")
+
+
+class DiscoveryVideo(Base):
+    __tablename__ = "discovery_videos"
+    __table_args__ = (UniqueConstraint("platform", "video_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    platform: Mapped[str] = mapped_column(default="douyin")
+    video_id: Mapped[str] = mapped_column(String(100))
+    metadata_json: Mapped[str] = mapped_column(Text)
+    discovered_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class DiscoveryObservation(Base):
+    __tablename__ = "discovery_observations"
+    __table_args__ = (UniqueConstraint("source_id", "round", "cursor", "video_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    source_id: Mapped[int] = mapped_column(ForeignKey("discovery_sources.id"))
+    round: Mapped[int] = mapped_column()
+    cursor: Mapped[str] = mapped_column(Text)
+    video_id: Mapped[int] = mapped_column(ForeignKey("discovery_videos.id"))
+    metadata_json: Mapped[str] = mapped_column(Text)
+    observed_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class DiscoveryMatch(Base):
+    __tablename__ = "discovery_matches"
+    __table_args__ = (UniqueConstraint("series_id", "video_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"))
+    video_id: Mapped[int] = mapped_column(ForeignKey("discovery_videos.id"))
+    kind: Mapped[str] = mapped_column(String(30))
+    basis: Mapped[str] = mapped_column(Text)
+    context: Mapped[str] = mapped_column(String(64))
+
+
+class DiscoverySubscription(Base):
+    __tablename__ = "discovery_subscriptions"
+    __table_args__ = (UniqueConstraint("ranking_id", "series_id"),)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("discovery_tasks.id"))
+    ranking_id: Mapped[int] = mapped_column(ForeignKey("ranking_runs.id"))
+    series_id: Mapped[int] = mapped_column(ForeignKey("series.id"))
+    catalog_id: Mapped[int] = mapped_column(ForeignKey("download_catalogs.id"))
+    active: Mapped[bool] = mapped_column(default=True)
+    message: Mapped[str] = mapped_column(Text, default="待核验候选不会自动准备或公开")

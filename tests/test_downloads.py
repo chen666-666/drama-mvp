@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from fastapi.testclient import TestClient
+from tests.auth_support import AdminClient as TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
@@ -126,7 +126,11 @@ class DownloadTests(unittest.TestCase):
 
     def test_media_url_and_local_path_restrictions(self):
         allowed_media_url("https://v1.douyinvod.com/video.mp4")
+        allowed_media_url("https://v3-dy-o.zjcdn.com/video.mp4")
         for url in ["http://v1.douyinvod.com/x", "https://localhost/x", "https://douyinvod.com.evil.test/x", "https://127.0.0.1/x", "https://u:p@douyinvod.com/x"]:
+            with self.assertRaises(ValueError):
+                allowed_media_url(url)
+        for url in ["http://v3-dy-o.zjcdn.com/x", "https://zjcdn.com.evil.test/x", "https://u:p@v3-dy-o.zjcdn.com/x"]:
             with self.assertRaises(ValueError):
                 allowed_media_url(url)
         with self.assertRaises(ValueError):
@@ -202,7 +206,18 @@ class DownloadTests(unittest.TestCase):
                 for path in ["/", "/legacy", "/workbench", "/downloads"]:
                     self.assertEqual(client.get(path).status_code, 200)
                 url = f"/api/downloads/rankings/{self.ranking['id']}"
+                self.assertEqual(client.post(url + "/initialize", json={}).status_code, 200)
                 self.assertEqual(len(client.get(url).json()["catalogs"]), 3)
+                # A synthetic snapshot whose rank order differs from series IDs and array order.
+                with self.factory.begin() as session:
+                    ranking = session.get(RankingRun, self.ranking["id"])
+                    snapshot = json.loads(ranking.snapshot)
+                    selected = [item for item in snapshot["items"] if item["selected"]]
+                    for position, item in enumerate(reversed(selected), 1):
+                        item["position"] = position
+                    ranking.snapshot = json.dumps(snapshot)
+                expected = [item["series_id"] for item in sorted(selected, key=lambda item: item["position"])]
+                self.assertEqual([catalog["series_id"] for catalog in client.get(url).json()["catalogs"]], expected)
                 response = client.post(f"/api/downloads/catalogs/{self.catalog.id}/links", json={"links": "https://www.douyin.com/video/999"}, headers={"Origin": "https://untrusted.example"})
                 self.assertEqual(response.status_code, 403)
                 response = client.post(url + "/export", json={})
@@ -210,3 +225,111 @@ class DownloadTests(unittest.TestCase):
                 self.assertTrue(zipfile.is_zipfile(io.BytesIO(client.get(response.json()["url"]).content)))
         finally:
             main.app.dependency_overrides.clear()
+
+    def test_download_reuses_trial_active_and_repair_job(self):
+        first = svc.download_one(self.session, self.catalog)
+        second = svc.download_one(self.session, self.catalog)
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertIsNone(first["file_url"])
+        rows = self.detail()["episodes"]
+        other = next(row for row in rows if not row["job"])
+        with self.assertRaisesRegex(ValueError, "门槛"):
+            svc.enqueue(self.session, self.catalog, [other["id"]], True)
+        job = self.session.get(DownloadJob, first["job_id"])
+        job.status = "paused"
+        self.assertEqual(svc.download_one(self.session, self.catalog)["status"], "queued")
+        job.status, job.attempts = "failed", 3
+        with self.assertRaisesRegex(ValueError, "三次"):
+            svc.download_one(self.session, self.catalog)
+
+    def test_public_read_does_not_initialize_catalogs(self):
+        import main
+        from sqlalchemy import func
+        def isolated():
+            yield self.session
+        main.app.dependency_overrides[main.database_session] = isolated
+        try:
+            before = self.session.scalar(select(func.count()).select_from(DownloadCatalog))
+            with patch.object(main, "init_db"), patch.object(main, "recover_jobs"), TestClient(main.app) as client:
+                client.cookies.clear()
+                result = client.get(f"/api/library/rankings/{self.ranking['id']}")
+                self.assertEqual(result.status_code, 200)
+                self.assertEqual(len(result.json()["catalogs"]), 3)
+                self.assertNotIn("relative_path", json.dumps(result.json()))
+                self.assertNotIn("review_history", json.dumps(result.json()))
+                self.assertEqual(self.session.scalar(select(func.count()).select_from(DownloadCatalog)), before)
+        finally:
+            main.app.dependency_overrides.clear()
+
+    def test_attachment_range_integrity_and_access(self):
+        import main
+        from services.media import digest
+        job_id = self.trial()
+        job = self.session.get(DownloadJob, job_id)
+        job.status = "verified"
+        path = self.data / "synthetic-delivery.mp4"
+        path.write_bytes(b"synthetic-video-content")
+        media = MediaFile(job_id=job_id, relative_path=path.name, size=path.stat().st_size,
+                          sha256=digest(path), duration=1, format="mp4", tracks='["video","audio"]', validation_note="synthetic")
+        self.session.add(media)
+        self.session.commit()
+        def isolated():
+            with self.factory() as session:
+                yield session
+        main.app.dependency_overrides[main.database_session] = isolated
+        try:
+            with patch.object(main, "init_db"), patch.object(main, "recover_jobs"), TestClient(main.app) as client:
+                url = f"/api/downloads/media/{media.id}/download"
+                result = client.get(url)
+                self.assertEqual(result.content, path.read_bytes())
+                self.assertIn("attachment", result.headers["content-disposition"])
+                self.assertEqual(result.headers["cache-control"], "no-store")
+                result = client.get(url, headers={"Range": "bytes=0-3"})
+                self.assertEqual(result.status_code, 206)
+                self.assertEqual(result.content, b"synt")
+                self.assertTrue(svc.download_one(self.session, self.catalog)["file_url"])
+                media.manual_status = "rejected"
+                self.session.commit()
+                self.assertEqual(client.get(url).status_code, 400)
+                media.manual_status = "pending"
+                self.session.commit()
+                path.write_bytes(b"X" * media.size)
+                self.assertIn("摘要异常", client.get(url).text)
+                self.assertEqual(svc.download_one(self.session, self.catalog)["status"], "queued")
+                self.session.rollback()
+                path.unlink()
+                self.assertIn("文件缺失", client.get(url).text)
+        finally:
+            main.app.dependency_overrides.clear()
+
+    def test_concurrent_clicks_return_one_job(self):
+        import main
+        import sqlite3
+        from concurrent.futures import ThreadPoolExecutor
+        from sqlalchemy import create_engine
+        target = self.data / "concurrent.db"
+        from contextlib import closing
+        with closing(sqlite3.connect(target)) as backup:
+            with self.fixture.engine.connect() as source:
+                source.connection.driver_connection.backup(backup)
+        engine = create_engine("sqlite:///" + target.as_posix(), connect_args={"timeout": 15})
+        factory = sessionmaker(bind=engine, autoflush=False)
+        def isolated():
+            with factory() as session:
+                try:
+                    yield session
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+        main.app.dependency_overrides[main.database_session] = isolated
+        try:
+            with patch.object(main, "init_db"), patch.object(main, "recover_jobs"), TestClient(main.app) as client:
+                url = f"/api/downloads/catalogs/{self.catalog.id}/download"
+                with ThreadPoolExecutor(max_workers=4) as pool:
+                    results = list(pool.map(lambda _: client.post(url, json={}), range(4)))
+                self.assertTrue(all(row.status_code == 200 for row in results), [r.text for r in results])
+                self.assertEqual(len({row.json()["job_id"] for row in results}), 1)
+        finally:
+            main.app.dependency_overrides.clear()
+            engine.dispose()

@@ -4,7 +4,7 @@ import httpx
 
 from sources.douk import BRIDGE, SourceUnavailable, _cookie
 
-CDN_DOMAINS = ("douyinvod.com", "douyin.com", "douyinpic.com", "bytecdn.cn", "byteimg.com", "douyinstatic.com", "amemv.com", "pstatp.com", "snssdk.com")
+CDN_DOMAINS = ("douyinvod.com", "douyin.com", "douyinpic.com", "bytecdn.cn", "byteimg.com", "douyinstatic.com", "amemv.com", "pstatp.com", "snssdk.com", "zjcdn.com")
 
 
 def bridge_request(endpoint, body):
@@ -14,7 +14,7 @@ def bridge_request(endpoint, body):
             response.raise_for_status()
             data = response.json()
     except (httpx.HTTPError, ValueError):
-        raise SourceUnavailable("failed", "本机采集服务未就绪或响应超时，请运行 start-search.ps1 并检查登录状态")
+        raise SourceUnavailable("transient", "本机采集服务未就绪或响应超时，请运行 start-search.ps1 并检查登录状态")
     status = data.get("status")
     if status != "ok":
         messages = {"needs_login": "抖音要求登录，请更新本机登录状态后恢复", "blocked": "抖音要求验证，请在官方页面完成后恢复",

@@ -1,0 +1,13 @@
+{% set area = control_area | default('videos') %}
+<aside class="control-sidebar" aria-label="控制区导航">
+  <a class="control-brand" href="/control">剧选 <span>控制区</span></a>
+  <nav class="control-links">
+    <a href="/control/tasks" {{ 'aria-current=page' if area == 'tasks' else '' }}>帮我找本期 Top3</a>
+    <a href="/control" {{ 'aria-current=page' if area == 'overview' else '' }}>待办总览</a>
+    <a href="/control/videos" {{ 'aria-current=page' if area == 'videos' else '' }}>视频管理</a>
+    <a href="/control/collection" {{ 'aria-current=page' if area == 'collection' else '' }}>采集与榜单</a>
+    <a href="/control/system" {{ 'aria-current=page' if area == 'system' else '' }}>系统与交付</a>
+  </nav>
+  <div class="control-exit"><a href="/">前往播放区 →</a><button id="site-logout" class="subtle" type="button">退出登录</button></div>
+</aside>
+<header class="area-header"><a href="/" class="area-link">播放区</a><a href="/control" class="area-link" aria-current="page">控制区</a><details class="control-menu"><summary>管理菜单</summary><nav><a href="/control/tasks">帮我找本期 Top3</a><a href="/control">待办总览</a><a href="/control/videos">视频管理</a><a href="/control/collection">采集与榜单</a><a href="/control/system">系统与交付</a><button type="button" class="subtle" onclick="document.getElementById('site-logout').click()">退出登录</button></nav></details></header>

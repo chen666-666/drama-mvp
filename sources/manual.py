@@ -116,18 +116,24 @@ def import_row(session, run_id, row):
         session.add(episode)
     elif episode.series_id is not None and episode.series_id != series.id:
         raise ValueError("该视频已归属其他作品，请先人工归并或纠正归属")
-    number = integer(row.get("episode_number"), "集号", minimum=1)
-    changed = episode.series_id != series.id or episode.title != row["title"].strip() or episode.published_at != published_at or episode.episode_number != number or episode.original_url != url
+    from services.episode_numbers import parse_episode_number
+    number, span = parse_episode_number(row.get("episode_number"))
+    changed = episode.series_id != series.id or episode.title != row["title"].strip() or episode.published_at != published_at or episode.episode_number != number or episode.episode_range != span or episode.original_url != url
     episode.series_id, episode.title, episode.original_url = series.id, row["title"].strip(), url
-    episode.published_at, episode.episode_number = published_at, number
+    episode.published_at, episode.episode_number, episode.episode_range = published_at, number, span
+    if span:
+        episode.content_kind = "compilation"
     if changed:
         episode.review_status = "pending"
     session.flush()
     missing = "、".join(METRIC_LABELS[field] for field, value in metrics.items() if value is None)
-    session.add(MetricSnapshot(run_id=run_id, episode_id=episode.id, sampled_at=sampled_at, **metrics,
-                              missing_reason=str(row.get("missing_reason") or (f"未取得 {missing}" if missing else "")).strip()))
+    metric = MetricSnapshot(run_id=run_id, episode_id=episode.id, sampled_at=sampled_at, **metrics,
+                           missing_reason=str(row.get("missing_reason") or (f"未取得 {missing}" if missing else "")).strip())
+    session.add(metric)
     add_hit(session, run_id, episode.id, row, url)
     session.flush()
+    from services.candidate_pool import record_sample
+    record_sample(session, metric)
 
 
 def import_csv(session, run_id, content):

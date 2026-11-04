@@ -12,7 +12,7 @@ from services.export import export_zip
 from services.media import digest
 
 FIELDS = ["ranking_id", "ranking_version", "records_cutoff", "position", "series_id", "series_title", "author_name",
-          "video_id", "title", "original_url", "episode_number", "source_duration", "status", "access", "note", "evidence_url",
+          "video_id", "title", "original_url", "episode_number", "episode_range", "source_duration", "status", "access", "note", "evidence_url",
           "job_status", "attempts", "tool", "message", "relative_path", "size", "duration", "format", "sha256", "created_at",
           "validation_note", "manual_status", "manual_note", "checked_at", "file_in_package", "review_history"]
 

@@ -30,6 +30,8 @@ from sqlalchemy import event
 @event.listens_for(engine, "connect")
 def enable_foreign_keys(connection, _record):
     connection.execute("PRAGMA foreign_keys=ON")
+    if os.getenv("DRAMA_SITE_MODE") == "public":
+        connection.execute("PRAGMA query_only=ON")
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
@@ -74,6 +76,18 @@ def migration_file_lock():
 def init_db() -> None:
     """Back up, validate on a copy, then apply the versioned migration."""
     from services.migration import upgrade_database
+    if os.getenv("DRAMA_SITE_MODE") == "public":
+        from services.migration import REVISION
+        from services.publishing import PUBLIC_APPLICATION_ID
+        import zlib
+        from sqlalchemy import text
+        with engine.connect() as connection:
+            if connection.scalar(text("SELECT version_num FROM alembic_version")) != REVISION:
+                raise RuntimeError("公开数据库版本不兼容，请在发布预检阶段完成迁移")
+            release = os.getenv("DRAMA_SITE_RELEASE", "")
+            if not release or connection.scalar(text("PRAGMA application_id")) != PUBLIC_APPLICATION_ID or connection.scalar(text("PRAGMA user_version")) != (zlib.crc32(release.encode()) & 0x7fffffff):
+                raise RuntimeError("未选择匹配的公开发布副本，拒绝直接展示本机业务库")
+        return
     with _migration_lock:
         with migration_file_lock():
             upgrade_database(engine)

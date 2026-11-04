@@ -5,16 +5,19 @@ from datetime import timedelta
 
 from sqlalchemy import func, select
 
-from models import Author, CollectionRun, Episode, Evidence, MetricSnapshot, RankingItem, RankingRun, ReviewRecord, SearchHit, SearchJob, Series
+from models import Author, CollectionRun, Episode, Evidence, MetricSnapshot, RankingItem, RankingRun, ReviewRecord, RunCandidate, SearchHit, SearchJob, Series
 from services.common import METRICS, beijing, iso, parse_time, utcnow
+from services.candidate_pool import membership_view, summary
 
 SAMPLE_TITLE = "抖音 AI 短剧近 7 天公开互动候选 Top3"
-DISCLAIMER = "基于本次检索样本，非抖音官方全量榜单。采样时累计互动不等于七天新增互动。"
+DISCLAIMER = "基于本次检索样本，自动搜索受点赞严格大于 50,000 的门槛限制，非抖音官方全量榜单。采样时累计互动不等于七天新增互动。"
 
 
 def content_kind(episode):
     if not episode:
         return "unknown"
+    if episode.episode_range:
+        return "compilation"
     if episode.content_kind != "unknown":
         return episode.content_kind
     if re.search(r"[0-9一二三四五六七八九十百]+\s*[-—–~～至到]\s*[0-9一二三四五六七八九十百]+\s*(?:集|[大全总]?合集)", episode.title) or re.search(r"大合集|多集合辑|全集纯享", episode.title):
@@ -39,16 +42,33 @@ def candidates(session, run):
     for hit in hits:
         key = ("episode", hit.episode_id) if hit.episode_id else ("link", hit.source_url)
         grouped.setdefault(key, []).append(hit)
+    members = {row.episode_id: row for row in session.scalars(select(RunCandidate).where(RunCandidate.run_id == run.id))}
+    for episode_id in members:
+        grouped.setdefault(("episode", episode_id), [])
     result = []
     for key, source_hits in grouped.items():
         episode = session.get(Episode, key[1]) if key[0] == "episode" else None
         series = session.get(Series, episode.series_id) if episode and episode.series_id else None
         author = session.get(Author, series.author_id) if series else None
-        metric = session.scalar(select(MetricSnapshot).where(MetricSnapshot.run_id == run.id, MetricSnapshot.episode_id == episode.id).order_by(MetricSnapshot.sampled_at.desc(), MetricSnapshot.id.desc())) if episode else None
+        member = members.get(episode.id) if episode else None
+        origin = session.get(SearchHit, member.source_hit_id) if member else None
+        metric = None
+        if member:
+            if member.metric_snapshot_id:
+                metric = session.get(MetricSnapshot, member.metric_snapshot_id)
+        elif episode:
+            metric = session.scalar(select(MetricSnapshot).where(MetricSnapshot.run_id == run.id,
+                MetricSnapshot.episode_id == episode.id).order_by(MetricSnapshot.sampled_at.desc(), MetricSnapshot.id.desc()))
+        previous = session.scalar(select(MetricSnapshot).where(MetricSnapshot.run_id != run.id,
+            MetricSnapshot.episode_id == episode.id).order_by(MetricSnapshot.sampled_at.desc(), MetricSnapshot.id.desc())) if member else None
         result.append({
+            "run_id": run.id,
+            "membership": membership_view(member, origin) if member else {},
+            "previous_sample": {"sampled_at": iso(previous.sampled_at), **{name: getattr(previous, name) for name in METRICS}} if previous else None,
             "episode_id": episode.id if episode else None, "video_id": episode.video_id if episode else None,
             "title": episode.title if episode else "链接待补全", "original_url": episode.original_url if episode else key[1],
             "episode_number": episode.episode_number if episode else None,
+            "episode_range": episode.episode_range if episode else None,
             "content_kind": content_kind(episode),
             "content_note": (episode.content_note or ("视频标题含多集范围或合集标记，按合集保留；可在整理视频中纠正" if episode.content_kind == "unknown" and content_kind(episode) == "compilation" else "")) if episode else "",
             "published_at": iso(episode.published_at) if episode else None,
@@ -65,7 +85,7 @@ def candidates(session, run):
             "sampled_at": iso(metric.sampled_at) if metric else None,
             "sampled_at_beijing": beijing(metric.sampled_at) if metric else "未知",
             **{name: getattr(metric, name) if metric else None for name in METRICS},
-            "missing_reason": metric.missing_reason if metric else "尚无互动采样",
+            "missing_reason": member.refresh_note if member and member.refresh_status != "refreshed" else metric.missing_reason if metric else "尚无互动采样",
             "method": metric.method if metric else None,
             "sources": [{"id": h.id, "source_url": h.source_url, "keyword": h.keyword, "sort_order": h.sort_order,
                          "position": h.position, "searched_at": iso(h.searched_at), "official_rank": h.official_rank} for h in source_hits],
@@ -75,7 +95,7 @@ def candidates(session, run):
     return result
 
 
-def make_ranking(session, run):
+def make_ranking(session, run, *, persist=True):
     generated_at = utcnow()
     rows = candidates(session, run)
     start = run.cutoff_at - timedelta(hours=run.window_hours)
@@ -83,6 +103,7 @@ def make_ranking(session, run):
     if run.mode == "official" and not metadata.get("verified"):
         raise ValueError("请先核验官方榜的发布主体、分类、更新时间、统计周期、指标及证据")
     eligible = []
+    unresolved = []
     for row in rows:
         reasons = []
         if not row["series_id"] or not row["video_id"] or not row["published_at"]:
@@ -95,12 +116,17 @@ def make_ranking(session, run):
             reasons.append("缺少 AI 制作依据或核验记录")
         if row["episode_status"] == "approved" and not row["episode_reviews"]:
             reasons.append("缺少正片核验记录")
-        if run.mode == "sample" and row["content_kind"] == "compilation":
-            reasons.append("多集合集不参与单集代表集排名，保留其来源与互动记录")
         if run.mode == "sample" and row["published_at"]:
             published = parse_time(row["published_at"])
             if not start <= published <= run.cutoff_at:
                 reasons.append("发布时间不在本批次窗口内")
+        refresh = row.get("membership", {}).get("refresh_status")
+        if run.mode == "sample" and refresh and refresh != "refreshed":
+            reasons.append(row["membership"]["refresh_note"])
+            in_window = not row["published_at"] or start <= parse_time(row["published_at"]) <= run.cutoff_at
+            if (refresh in ("pending", "failed", "unavailable") and in_window
+                    and row["series_status"] != "excluded" and row["episode_status"] != "excluded"):
+                unresolved.append(row["video_id"])
         if run.mode == "official":
             ranks = {h["official_rank"] for h in row["sources"] if h["official_rank"] is not None}
             if len(ranks) > 1:
@@ -131,7 +157,7 @@ def make_ranking(session, run):
         complete = bool(eligible) and all(all(row[name] is not None for name in METRICS) for row in eligible)
         scoring = "weighted" if complete else "likes"
         if complete:
-            explanation = "单集分 = 点赞 + 3×评论 + 4×收藏 + 5×分享。同分依次比分享、收藏、发布时间（较新优先）、视频 ID（字典升序）。"
+            explanation = "视频分 = 点赞 + 3×评论 + 4×收藏 + 5×分享。同分依次比分享、收藏、发布时间（较新优先）、视频 ID（字典升序）。"
             for row in eligible:
                 row["score"] = row["likes"] + 3 * row["comments"] + 4 * row["favorites"] + 5 * row["shares"]
             sort_key = lambda row: (-row["score"], -row["shares"], -row["favorites"], -_timestamp(row["published_at"]), row["video_id"])
@@ -163,7 +189,8 @@ def make_ranking(session, run):
         "cutoff_at": iso(run.cutoff_at), "cutoff_at_beijing": beijing(run.cutoff_at),
         "window_start": iso(start), "window_hours": run.window_hours, "timezone": "Asia/Shanghai",
         "keywords": json.loads(run.keywords), "rule_version": run.rule_version, "scoring_mode": scoring,
-        "comparison_policy_version": "single-episode-v2",
+        "comparison_policy_version": "video-representative-v3",
+        "candidate_policy_version": "known-window-v1",
         "explanation": explanation, "official_metadata": metadata,
         "generated_at": iso(generated_at), "generated_at_beijing": beijing(generated_at),
         "candidate_count": len(rows), "qualified_series_count": len(items),
@@ -171,7 +198,8 @@ def make_ranking(session, run):
                       "详见全部候选中的排除原因。" + ("官方榜保留原名次，不用后续名次补位。" if run.mode == "official" else ""))
                      if sum(item["selected"] for item in items) < 3 else "",
         "items": items, "candidates": rows,
-        "representative_policy": "窗口内经核验的单集正片，多集合集不参与代表集比较；作品取最高分单集且只占一个名额",
+        "representative_policy": ("窗口内经核验的单集正片、独立短片和多集合集均可参与；按原视频整条互动计算，不拆分、不累加同剧视频；作品取最高分视频且只占一个名额"
+                                  if run.mode == "sample" else "保留经核验的官方作品名次，同作品只占一个名额，不按互动重排"),
         "review_scope": review_scope(rows, items, scoring, run),
         "search_jobs": [{"id": job.id, "status": job.status, "config": json.loads(job.config),
                          "progress": json.loads(job.progress), "message": job.message,
@@ -181,6 +209,13 @@ def make_ranking(session, run):
                      "actual_keywords": sorted({h["keyword"] for row in rows for h in row["sources"] if h["keyword"]}),
                      "actual_sorts": sorted({h["sort_order"] for row in rows for h in row["sources"] if h["sort_order"]})},
     }
+    snapshot["candidate_summary"] = summary(rows)
+    blockers = []
+    if unresolved:
+        blockers.append(f"仍有 {len(unresolved)} 条已有候选未完成本批次互动更新，请重试、补充真实采样或人工核对后排除")
+    if run.mode == "sample" and snapshot["search_jobs"] and snapshot["search_jobs"][-1]["status"] != "completed":
+        blockers.append("最近一次搜索或互动更新尚未完成，请恢复并完成后生成正式榜单")
+    snapshot["generation_blockers"] = blockers
     completed = [job for job in snapshot["search_jobs"] if job["status"] == "completed"]
     if completed:
         latest = completed[-1]
@@ -188,6 +223,11 @@ def make_ranking(session, run):
             "pages_done": latest["progress"]["pages_done"], "requests": latest["progress"]["requests"],
             "imported": latest["progress"]["imported"], "skipped": latest["progress"]["skipped"],
             "budget": latest["config"]["budget"]}
+        snapshot["collection_summary"]["refresh_requests"] = latest["progress"].get("refresh_requests", 0)
+    if not persist:
+        return snapshot
+    if blockers:
+        raise ValueError("；".join(blockers) + "。当前仅为草案，原正式榜单保留")
     ranking = RankingRun(run_id=run.id, version=version, mode=run.mode, scoring_mode=scoring,
                          snapshot=json.dumps(snapshot, ensure_ascii=False), created_at=generated_at)
     session.add(ranking)
@@ -197,6 +237,10 @@ def make_ranking(session, run):
                                metric_snapshot_id=row["metric_snapshot_id"], position=row["position"], score=row["score"],
                                detail=json.dumps(row, ensure_ascii=False)))
     session.flush()
+    from services.downloads import inherit_ranking_media
+    inherit_ranking_media(session, ranking.id)
+    from services.episode_discovery import register_ranking
+    register_ranking(session, ranking)
     return {"id": ranking.id, **snapshot}
 
 
@@ -206,10 +250,10 @@ def review_scope(rows, items, scoring, run):
     pending = []
     start = run.cutoff_at - timedelta(hours=run.window_hours)
     for row in rows:
+        if row.get("content_kind") == "compilation":
+            counts["compilations"] += 1
         if row["series_status"] == "excluded" or row["episode_status"] == "excluded":
             counts["excluded"] += 1
-        elif row.get("content_kind") == "compilation" and run.mode == "sample":
-            counts["compilations"] += 1
         elif row["series_status"] == "approved" and row["episode_status"] == "approved":
             counts["approved"] += 1
         else:

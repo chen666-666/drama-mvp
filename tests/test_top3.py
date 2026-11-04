@@ -11,13 +11,13 @@ import unittest
 from unittest.mock import patch
 import zipfile
 
-from fastapi.testclient import TestClient
+from tests.auth_support import AdminClient as TestClient
 from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from database import Base
-from models import Author, CollectionRun, Drama, Episode, MetricSnapshot, RankingRun, SearchHit, Series
+from models import Author, CollectionRun, Drama, Episode, MetricSnapshot, RankingRun, RunCandidate, SearchHit, Series
 from services.common import KEYWORDS, parse_time
 from services.export import export_zip
 from services.migration import upgrade_database
@@ -239,15 +239,102 @@ class RankingTests(unittest.TestCase):
         self.assertEqual(parse_time("2026-10-30T12:00:00"), CUTOFF)
         self.assertEqual(parse_time("2026-10-30T12:00:00+08:00"), CUTOFF)
 
-    def test_multi_episode_compilation_excluded_and_single_short_story_allowed(self):
+    def test_multi_episode_compilation_and_single_short_story_both_rank(self):
         self.import_rows([self.row(title="自制短剧1-6集纯享版", likes="99999"),
                           self.row(title="独立三分钟故事", likes="50")])
         self.approve_all()
         ranking = self.ranking()
-        self.assertEqual(len(ranking["items"]), 1)
-        self.assertEqual(ranking["items"][0]["title"], "独立三分钟故事")
-        self.assertTrue(any("多集合集" in reason for reason in ranking["candidates"][0]["exclusion_reasons"]))
+        self.assertEqual(len(ranking["items"]), 2)
+        self.assertEqual(ranking["items"][0]["title"], "自制短剧1-6集纯享版")
+        self.assertEqual(ranking["items"][0]["score"], 100011)
+        self.assertEqual(ranking["candidates"][0]["exclusion_reasons"], [])
+        self.assertEqual(ranking["comparison_policy_version"], "video-representative-v3")
+        self.assertEqual(ranking["review_scope"]["approved"], 2)
         self.assertEqual(ranking["review_scope"]["compilations"], 1)
+
+    def test_compilation_and_single_same_series_use_highest_video_without_summing(self):
+        self.import_rows([self.row(title="单集", author_id="same", series_key="same", likes="90000"),
+                          self.row(title="1-4合集", author_id="same", series_key="same", likes="790939")])
+        self.approve_all()
+        result = self.ranking()
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["title"], "1-4合集")
+        self.assertEqual(result["items"][0]["score"], 790951)
+        self.assertEqual(result["items"][0]["content_kind"], "compilation")
+        self.assertIsNone(result["items"][0]["episode_number"])
+
+    def test_explicit_compilation_missing_metric_downgrades_every_video(self):
+        self.import_rows([self.row(title="标题没有范围", likes="80000", shares=""), self.row(likes="90000")])
+        self.approve_all()
+        episode = self.session.scalar(select(Episode).order_by(Episode.id))
+        episode.content_kind = "compilation"
+        self.session.flush()
+        result = self.ranking()
+        self.assertEqual(result["scoring_mode"], "likes")
+        self.assertEqual([r["score"] for r in result["items"]], [90000, 80000])
+
+    def test_pending_compilation_is_in_remaining_review_assessment(self):
+        self.import_rows([self.row(likes=str(v)) for v in (100, 80, 60)])
+        self.approve_all()
+        self.import_rows([self.row(title="1-4合集", likes="99999")])
+        scope = self.ranking()["review_scope"]
+        self.assertEqual(scope["pending"], 1)
+        self.assertEqual(scope["compilations"], 1)
+        self.assertEqual(scope["affecting_count"], 1)
+
+    def test_compilation_still_requires_window_review_and_completed_refresh(self):
+        self.import_rows([self.row(title="1-4合集", likes="80000")])
+        self.assertEqual(self.ranking()["items"], [])
+        self.approve_all()
+        episode = self.session.scalar(select(Episode))
+        hit = self.session.scalar(select(SearchHit))
+        member = RunCandidate(run_id=self.run.id, episode_id=episode.id, source_hit_id=hit.id,
+                              refresh_status="failed", refresh_note="尚无本批采样")
+        self.session.add(member);self.session.flush()
+        draft = make_ranking(self.session, self.run, persist=False)
+        self.assertEqual(draft["items"], [])
+        self.assertTrue(draft["generation_blockers"])
+        member.refresh_status = "refreshed"
+        member.metric_snapshot_id = self.session.scalar(select(MetricSnapshot.id))
+        self.session.flush()
+        self.assertEqual(len(self.ranking()["items"]), 1)
+        episode.published_at = CUTOFF - timedelta(hours=169)
+        self.session.flush()
+        self.assertEqual(self.ranking()["items"], [])
+        episode.published_at = CUTOFF
+        episode.review_status = "excluded"
+        self.session.flush()
+        self.assertEqual(self.ranking()["items"], [])
+
+    def test_new_policy_preserves_legacy_snapshot_and_report_wording(self):
+        from services.export import report_html
+        self.import_rows([self.row(title="1-4合集", likes="80000")]);self.approve_all()
+        old = self.ranking()
+        old["comparison_policy_version"] = "single-episode-v2"
+        old["representative_policy"] = "多集合集不参与代表集比较"
+        saved = self.session.get(RankingRun, old["id"])
+        saved.snapshot = json.dumps(old, ensure_ascii=False)
+        self.session.flush()
+        original = saved.snapshot
+        new = self.ranking()
+        self.assertEqual(saved.snapshot, original)
+        self.assertIn("单独保留的多集合集", report_html(json.loads(saved.snapshot)))
+        self.assertIn("上述候选中含多集合集", report_html(new))
+        with zipfile.ZipFile(io.BytesIO(export_zip(new))) as archive:
+            snapshot = json.loads(archive.read("榜单快照.json"))
+            self.assertEqual(snapshot["comparison_policy_version"], "video-representative-v3")
+            self.assertEqual(snapshot["items"][0]["content_kind"], "compilation")
+
+    def test_compilation_representative_enters_catalog_with_original_video_id(self):
+        from services.downloads import catalog_for
+        from models import DownloadEpisode
+        self.import_rows([self.row(title="1-4合集", likes="80000")]);self.approve_all()
+        result = self.ranking()
+        catalog = catalog_for(self.session, result["id"], result["items"][0]["series_id"])
+        entry = self.session.scalar(select(DownloadEpisode).where(DownloadEpisode.catalog_id == catalog.id))
+        self.assertEqual(entry.video_id, result["items"][0]["video_id"])
+        self.assertEqual(entry.status, "approved")
+        self.assertIsNone(entry.episode_number)
 
     def test_remaining_review_can_affect_top3_and_unknown_metrics_are_disclosed(self):
         self.import_rows([self.row(likes=str(value)) for value in [100, 80, 60]])
